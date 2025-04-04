@@ -1,6 +1,6 @@
 use core::cell::SyncUnsafeCell;
 
-use crate::asm::{inb, outb};
+use crate::io::{inb, outb};
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]

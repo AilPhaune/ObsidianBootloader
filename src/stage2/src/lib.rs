@@ -2,7 +2,7 @@
 #![no_main]
 #![feature(sync_unsafe_cell)]
 
-pub mod asm;
+pub mod io;
 pub mod video;
 
 use crate::video::{ Video, Color };
