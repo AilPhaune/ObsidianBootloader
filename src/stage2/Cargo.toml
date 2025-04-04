@@ -1,0 +1,33 @@
+[package]
+name = "stage2"
+version = "0.1.0"
+authors = ["AilPhaune"]
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+
+[build-dependencies]
+
+[features]
+default = []
+
+[profile.dev]
+panic = "abort"
+opt-level = "z"
+
+[profile.release]
+panic = "abort"
+opt-level = "z"
+overflow-checks = false
+debug = true
+
+[package.metadata.cargo-xbuild.default-target]
+i686-unknown-none = true
+
+[build]
+target = "linker.ld"
+rustflags = ["-C", "link-arg=-Tlinker.ld", "-C", "link-arg=--oformat=binary"]
+
+[package.metadata]
+rustflags = ["-C", "link-args=-Tlinker.ld"]

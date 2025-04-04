@@ -1,0 +1,27 @@
+from SCons.Environment import *
+from SCons.Variables import *
+from SCons.Node import *
+from glob import glob
+
+env = Environment(ENV = os.environ)
+
+def all_of(list_patterns: list[str]):
+    result = []
+    for pattern in list_patterns:
+        for file in glob(pattern, recursive=True):
+            result.append(file)
+    return result
+
+env.Command('build/boot.bin', glob('src/boot/**/*.asm', recursive=True), 'nasm -f bin src/boot/boot.asm -o $TARGET')
+env.Command('build/stage1.bin', glob('src/stage1/**/*.asm', recursive=True), 'nasm -f bin src/stage1/stage1.asm -o $TARGET')
+env.Command('build/bootloader_stage2.bin', all_of(['src/stage2/**/*.asm', 'src/stage2/**/*.rs']), [
+    '/usr/bin/sh -c "cd src/stage2 && make"'
+])
+
+env.Command('build/bootloader.bin', ['build/boot.bin', 'build/stage1.bin', 'build/bootloader_stage2.bin'], [
+    'dd if=/dev/zero of=build/bootloader.bin count=16 bs=1M',
+    #'mkfs.ext2 build/bootloader.bin',
+    'dd if=build/boot.bin of=build/bootloader.bin conv=notrunc',
+    'dd if=build/stage1.bin of=build/bootloader.bin bs=512 oseek=1 conv=notrunc',
+    'dd if=build/bootloader_stage2.bin of=build/bootloader.bin bs=512 oseek=11 conv=notrunc'
+])

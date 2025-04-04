@@ -1,0 +1,3 @@
+#!/usr/bin/bash
+source venv/bin/activate
+export PYTHONPATH=$(pwd)/venv/lib/python3.13/site-packages:$PYTHONPATH

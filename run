@@ -1,0 +1,3 @@
+#!/usr/bin/sh
+
+qemu-system-i386 -m 128 -drive file=build/bootloader.bin,index=0,media=disk,format=raw
