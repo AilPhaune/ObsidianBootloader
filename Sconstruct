@@ -20,7 +20,7 @@ env.Command('build/bootloader_stage2.bin', all_of(['src/stage2/**/*.asm', 'src/s
 
 env.Command('build/bootloader.bin', ['build/boot.bin', 'build/stage1.bin', 'build/bootloader_stage2.bin'], [
     'dd if=/dev/zero of=build/bootloader.bin count=16 bs=1M',
-    #'mkfs.ext2 build/bootloader.bin',
+    'mkfs.ext2 build/bootloader.bin',
     'dd if=build/boot.bin of=build/bootloader.bin conv=notrunc',
     'dd if=build/stage1.bin of=build/bootloader.bin bs=512 oseek=1 conv=notrunc',
     'dd if=build/bootloader_stage2.bin of=build/bootloader.bin bs=512 oseek=11 conv=notrunc'

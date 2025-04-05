@@ -45,22 +45,32 @@ CR EQU 13
 
 bits 32
 stage1_pmode:
-    ; mov eax, gdt_data_selector
-    ; mov ds, ax
-    ; mov ss, ax
-    ; mov es, ax
-    ; mov fs, ax
-    ; mov gs, ax
+    mov eax, gdt_data_selector
+    mov ds, ax
+    mov ss, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
 
     mov ebp, 0x7c00
     mov esp, ebp
     
     and edx, 0xFF
     push edx
+    
+    sidt [idt_store]
+    mov eax, [idt_store]
+    push eax
+
     jmp 0x9000
+
+    pop eax
     pop edx
 
 stage1_end:
     cli
     hlt
     jmp $
+
+idt_store:
+    dq 0

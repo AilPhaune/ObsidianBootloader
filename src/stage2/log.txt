@@ -1,0 +1,1 @@
+argo:rerun-if-changed=.cargo/config.toml

@@ -11,3 +11,4 @@ stage3_entry:
     jmp $
 
 %include "asm/io.asm"
+%include "asm/bios.asm"

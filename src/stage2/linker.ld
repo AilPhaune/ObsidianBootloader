@@ -6,6 +6,7 @@ SECTIONS
 
     .text : {
         *(.text.stage3_entry)
+        *(.text.unsafe_call_bios_interrupt)
         *(.text*)
     }
 

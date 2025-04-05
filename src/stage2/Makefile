@@ -22,7 +22,7 @@ stage2: stage2asm
 
 stage2asm: ../../build/main.o
 
-../../build/main.o: main.asm
+../../build/main.o: $(shell find . -type f -name '*.asm')
 	mkdir -p build
 	$(ASM) $(ASM_FLAGS) -o ../../build/main.o main.asm
 

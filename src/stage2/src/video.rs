@@ -10,6 +10,7 @@ pub struct Character {
 }
 
 #[repr(u8)]
+#[derive(Clone, Copy)]
 pub enum Color {
     Black = 0x00,
     Blue = 0x01,
@@ -314,6 +315,20 @@ impl Video {
     pub fn write_hex_u8(&mut self, value: u8) {
         self.write_char0(get_hex_digit((value >> 4) & 0xF));
         self.write_char0(get_hex_digit(value & 0xF));
+        self.update_cursor();
+    }
+
+    pub fn write_hex_u16(&mut self, value: u16) {
+        for i in (0..4).rev() {
+            self.write_char0(get_hex_digit(((value >> (i * 4)) & 0xF) as u8));
+        }
+        self.update_cursor();
+    }
+
+    pub fn write_hex_u32(&mut self, value: u32) {
+        for i in (0..8).rev() {
+            self.write_char0(get_hex_digit(((value >> (i * 4)) & 0xF) as u8));
+        }
         self.update_cursor();
     }
 

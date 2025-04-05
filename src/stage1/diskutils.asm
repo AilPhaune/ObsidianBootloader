@@ -49,7 +49,7 @@ disk_address_packet:
     .dap_size:              db 0x10
     .dap_null:              db 0
     .dap_num_sectors_read:  dw 0
-    .dap_dest_segment:      dw 0
     .dap_dest_offset:       dw 0
+    .dap_dest_segment:      dw 0
     .dap_lba_lo:            dd 0
     .dap_lba_hi:            dd 0
