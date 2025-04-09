@@ -182,6 +182,39 @@ impl ExtendedDisk {
         Ok(())
     }
 
+    /// # Safety
+    /// Passed buffer must be at least `bytes_per_sector` long
+    pub unsafe fn unsafe_read_sector_to_buffer(&mut self, lba: u64, buffer: *mut u8) -> Result<(), DiskError> {
+        let bps = self.get_params()?.bytes_per_sector as usize;
+        let (segment, offset) = ptr_to_seg_off(addr_of!(BUFF) as usize);
+        unsafe {
+            let (dap_seg, dap_off) = ptr_to_seg_off(addr_of!(DAP) as usize);
+            DAP = DiskAccessPacket {
+                size: 0x10,
+                null: 0,
+                sector_count: 1,
+                offset,
+                segment,
+                lba,
+            };
+
+            let result = unsafe_call_bios_interrupt(
+                self.bios_idt, 0x13,
+                0x4200, 0, 0, self.disk as usize, dap_off as usize, 0, dap_seg as usize, dap_seg as usize, 0, 0
+            ) as *const BiosInterruptResult;
+
+            if ((*result).eflags & eflags::CF) != 0 {
+                return Err(DiskError::ReadError(((*result).eax & 0xFFFF) >> 8))
+            }
+
+            let output_buf = seg_off_to_ptr(segment, offset) as *const u8;
+            for i in 0..bps {
+                *buffer.add(i) = *output_buf.add(i);
+            }
+        }
+        Ok(())
+    }
+
     #[no_mangle]
     pub fn read_to_buffer(&mut self, lba: u64, buffer: &mut [u8]) -> Result<(), DiskError> {
         let bps = self.get_params()?.bytes_per_sector as usize;

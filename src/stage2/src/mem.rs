@@ -123,6 +123,8 @@ impl MemoryBlock {
         (self.flags & BLOCK_FLAG_FREE) != 0
     }
 
+    #[no_mangle]
+    #[inline(never)]
     pub fn set_free(&mut self) {
         self.flags |= BLOCK_FLAG_FREE;
     }
@@ -238,6 +240,9 @@ pub fn malloc<T>(size: usize) -> Option<*mut T> {
 /// # Safety
 /// ptr must be a pointer returned by malloc
 pub unsafe fn free<T>(ptr: *mut T) {
+    if ptr.is_null() {
+        return;
+    }
     let mut block = (ptr as *mut MemoryBlock).offset(-1);
     (*block).set_free();
 
@@ -368,7 +373,7 @@ impl<T> Vec<T> where T: Sized {
             kpanic();
         }
         Self {
-            ptr: malloc(size_of::<T>()).unwrap(),
+            ptr: malloc(size_of::<T>()).unwrap_or_else(|| kpanic()),
             len: 0,
             cap: capcity,
         }
@@ -377,7 +382,7 @@ impl<T> Vec<T> where T: Sized {
     pub fn ensure_capacity(&mut self, capacity: usize) {
         if self.cap < capacity {
             unsafe {
-                self.ptr = realloc(self.ptr, capacity * size_of::<T>()).unwrap();
+                self.ptr = realloc(self.ptr, capacity * size_of::<T>()).unwrap_or_else(|_| kpanic());
             }
         }
     }
@@ -390,7 +395,7 @@ impl<T> Vec<T> where T: Sized {
             self.cap *= 2;
         }
         unsafe {
-            self.ptr = realloc(self.ptr, self.cap * size_of::<T>()).unwrap();
+            self.ptr = realloc(self.ptr, self.cap * size_of::<T>()).unwrap_or_else(|_| kpanic());
         }
     }
 
@@ -436,10 +441,62 @@ impl<T> Vec<T> where T: Sized {
             Some(value)
         }
     }
+
+    pub fn iter<'a>(&'a self) -> RefIterVec<'a, T> {
+        RefIterVec {
+            vec: self,
+            idx: 0,
+        }
+    }
 }
 
 impl<T> Drop for Vec<T> where T: Sized {
     fn drop(&mut self) {
         unsafe { free(self.ptr); }
+    }
+}
+
+pub struct RefIterVec<'a, T> where T: Sized {
+    vec: &'a Vec<T>,
+    idx: usize,
+}
+
+impl<'a, T> Iterator for RefIterVec<'a, T> where T: Sized {
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let res = self.vec.get(self.idx)?;
+        self.idx += 1;
+        Some(res)
+    }
+}
+
+pub struct IterVec<T> where T: Sized {
+    vec: Vec<T>,
+    idx: usize,
+}
+
+impl<T> Iterator for IterVec<T> where T: Sized {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.idx >= self.vec.len {
+            None
+        } else {
+            self.idx += 1;
+            Some(unsafe { self.vec.ptr.add(self.idx-1).read_unaligned() })
+        }
+    }
+}
+
+impl<T> IntoIterator for Vec<T> where T: Sized {
+    type Item = T;
+    type IntoIter = IterVec<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        IterVec {
+            vec: self,
+            idx: 0,
+        }
     }
 }

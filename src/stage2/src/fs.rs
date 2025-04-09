@@ -1,6 +1,6 @@
-use core::slice;
+use core::{ptr, slice};
 
-use crate::{bios::{DiskError, ExtendedDisk}, mem::{free, malloc, memcpy, Box}};
+use crate::{bios::{DiskError, ExtendedDisk}, kpanic, mem::{free, malloc, memcpy, Box, Vec}};
 
 #[repr(C, packed)]
 pub struct Ext2SuperBlock {
@@ -81,7 +81,10 @@ pub const RO_FEATURE_SPARSE_DESCRIPTOR_TABLES: u32 = 0x1;
 pub const RO_FEATURE_64BIT_FILE_SIZE: u32 = 0x2;
 pub const RO_FEATURE_DIRECTORY_CONTENT_IN_BINARY_TREE: u32 = 0x4;
 
+const BLOCK_GROUP_DESCRIPTOR_SIZE: usize = 32;
+
 #[repr(C, packed)]
+#[derive(Clone, Copy)]
 pub struct Ext2BlockGroupDescriptor {
     pub block_usage_bitmap: u32,
     pub inode_usage_bitmap: u32,
@@ -94,22 +97,33 @@ pub struct Ext2BlockGroupDescriptor {
 pub enum Ext2Error {
     DiskError(DiskError),
     BadDiskSectorSize(u16),
+    BadBlockSize(usize, u16),
+    BadBlockGroupDescriptorTableEntrySize(usize, usize),
+    NullBlockSize,
+    BadSuperblock,
     FailedMemAlloc,
 }
 
 pub struct Ext2FileSystem {
     disk: ExtendedDisk,
-    superblock: Option<Box<Ext2SuperBlock>>,
+    superblock: Box<Ext2SuperBlock>,
+    pub block_groups: Vec<Ext2BlockGroupDescriptor>,
+    sectors_per_block: usize,
 }
 
 impl Ext2FileSystem {
-    pub fn new(disk: ExtendedDisk) -> Result<Self, Ext2Error> {
-        let mut ext2 = Self { disk, superblock: None };
+    pub fn mount_ro(disk: ExtendedDisk) -> Result<Self, Ext2Error> {
+        let mut ext2 = Self {
+            disk,
+            superblock: unsafe { Box::from_raw(ptr::null_mut()) },
+            block_groups: Vec::default(),
+            sectors_per_block: 0
+        };
         ext2.read_superblock()?;
+        ext2.read_block_group_descriptor_table()?;
         Ok(ext2)
     }
 
-    #[no_mangle]
     fn read_superblock(&mut self) -> Result<(), Ext2Error> {
         let params = self.disk.get_params().map_err(Ext2Error::DiskError)?;
         if params.bytes_per_sector != 512 && params.bytes_per_sector != 4096 {
@@ -124,10 +138,107 @@ impl Ext2FileSystem {
         unsafe {
             self.disk.read_to_buffer(start_lba as u64, slice::from_raw_parts_mut(buffer, 4096)).map_err(Ext2Error::DiskError)?;
             memcpy(superblock_buffer, buffer.add(buf_idx), 1024);
-            self.superblock = Some(Box::from_raw(superblock_buffer as *mut Ext2SuperBlock));
+            self.superblock = Box::from_raw(superblock_buffer as *mut Ext2SuperBlock);
             free(buffer);
         }
 
+        if (self.block_size() % (params.bytes_per_sector as usize)) != 0 {
+            // A block isn't a whole amount of logical sectors
+            return Err(Ext2Error::BadBlockSize(self.block_size(), params.bytes_per_sector));
+        }
+        self.sectors_per_block = self.block_size() / (params.bytes_per_sector as usize);
+
         Ok(())
+    }
+
+    fn read_block_group_descriptor_table(&mut self) -> Result<(), Ext2Error> {
+        let entry_count = self.count_block_groups()?;
+        let table_size = entry_count * BLOCK_GROUP_DESCRIPTOR_SIZE;
+        let bs = self.block_size();
+        if bs == 0 {
+            return Err(Ext2Error::NullBlockSize);
+        }
+        let buffer = malloc::<u8>(table_size).ok_or(Ext2Error::FailedMemAlloc)?;
+        let block_buffer = malloc::<u8>(bs).ok_or(Ext2Error::FailedMemAlloc)?;
+
+        let mut read = 0;
+        let mut disk_byte = 2048;
+
+        while read < table_size {
+            let disk_block = disk_byte / bs;
+            let block_offset = disk_byte % bs;
+            let to_copy = (table_size - read).min(bs - block_offset);
+            unsafe {
+                self.read_block(disk_block as u64, block_buffer)?;
+                memcpy(buffer.add(read), block_buffer.add(block_offset), to_copy);
+            }
+            read += to_copy;
+            disk_byte += to_copy;
+        }
+
+        self.block_groups.ensure_capacity(entry_count);
+        for i in 0..entry_count {
+            let offset = i * BLOCK_GROUP_DESCRIPTOR_SIZE;
+            let block_group = unsafe { &*(buffer.add(offset) as *const Ext2BlockGroupDescriptor) };
+            self.block_groups.push(*block_group);
+        }
+
+        unsafe {
+            free(buffer);
+            free(block_buffer);
+        }
+
+        Ok(())
+    }
+
+    unsafe fn read_block(&mut self, block: u64, buffer: *mut u8) -> Result<(), Ext2Error> {
+        let begin_lba: u64 = block * self.sectors_per_block as u64;
+        for i in 0..self.sectors_per_block {
+            self.disk
+                .unsafe_read_sector_to_buffer(begin_lba + i as u64, buffer.add(i * self.block_size()))
+                .map_err(Ext2Error::DiskError)?;
+        }
+        Ok(())
+    }
+
+    fn count_block_groups(&self) -> Result<usize, Ext2Error> {
+        let bpg = self.superblock.blocks_per_group;
+        let ipg = self.superblock.inodes_per_group;
+        if bpg == 0 || ipg == 0 {
+            return Err(Ext2Error::BadSuperblock);
+        }
+        let r1 = self.superblock.blocks_count.div_ceil(bpg) as usize;
+        let r2 = self.superblock.inodes_count.div_ceil(ipg) as usize;
+        if r1 != r2 {
+            Err(Ext2Error::BadBlockGroupDescriptorTableEntrySize(r1, r2))
+        } else {
+            Ok(r1)
+        }
+    }
+
+    fn block_size(&self) -> usize {
+        1024 << (self.superblock.log_block_size as usize)
+    }
+
+    fn get_inode_group(&self, inode: usize) -> usize {
+        if self.superblock.inodes_per_group == 0 {
+            kpanic();
+        }
+        (inode - 1) / (self.superblock.inodes_per_group as usize)
+    }
+
+    fn get_inode_index_in_group(&self, inode: usize) -> usize {
+        if self.superblock.inodes_per_group == 0 {
+            kpanic();
+        }
+        (inode - 1) % (self.superblock.inodes_per_group as usize)
+    }
+
+    fn inode_size(&self) -> usize {
+        if self.superblock.major_version_level >= 1 {
+            self.superblock.inode_struct_size as usize
+        } else {
+            128
+        }
     }
 }

@@ -154,7 +154,7 @@ pub extern "cdecl" fn rust_entry(bios_idt: usize, boot_drive: usize) -> ! {
             };
         }
 
-        let ext2 = Ext2FileSystem::new(extended_disk).unwrap_or_else(|e| {
+        let ext2 = Ext2FileSystem::mount_ro(extended_disk).unwrap_or_else(|e| {
             match e {
                 Ext2Error::FailedMemAlloc => {
                     video.write_string(b"Failed to allocate memory\n");
@@ -163,6 +163,26 @@ pub extern "cdecl" fn rust_entry(bios_idt: usize, boot_drive: usize) -> ! {
                     video.write_string(b"Bad disk sector size: 0x");
                     video.write_hex_u16(s);
                     video.write_char(b'\n');
+                }
+                Ext2Error::BadBlockSize(bs, ss) => {
+                    video.write_string(b"Bad block size: 0x");
+                    video.write_hex_u32(bs as u32);
+                    video.write_string(b" is not an integer multiple of the disk sector size 0x");
+                    video.write_hex_u16(ss);
+                    video.write_char(b'\n');
+                }
+                Ext2Error::BadBlockGroupDescriptorTableEntrySize(a, b) => {
+                    video.write_string(b"Bad block group descriptor table entry size: 0x");
+                    video.write_hex_u32(a as u32);
+                    video.write_string(b" != 0x");
+                    video.write_hex_u32(b as u32);
+                    video.write_char(b'\n');
+                }
+                Ext2Error::NullBlockSize => {
+                    video.write_string(b"Null block size\n");
+                }
+                Ext2Error::BadSuperblock => {
+                    video.write_string(b"Bad superblock\n");
                 }
                 Ext2Error::DiskError(e) => {
                     video.write_string(b"Disk error: ");
@@ -188,7 +208,27 @@ pub extern "cdecl" fn rust_entry(bios_idt: usize, boot_drive: usize) -> ! {
             kpanic();
         });
         show_mem!();
-        
+
+        video.write_string(b"Num block groups: 0x");
+        video.write_hex_u32(ext2.block_groups.len() as u32);
+        video.write_char(b'\n');
+        for (i, bg) in ext2.block_groups.iter().enumerate() {
+            video.write_string(b"Block group: 0x");
+            video.write_hex_u8(i as u8);
+            video.write_string(b"\nBlock usage 0x");
+            video.write_hex_u32(bg.block_usage_bitmap);
+            video.write_string(b" | Inode table 0x");
+            video.write_hex_u32(bg.inode_table_block);
+            video.write_string(b" | Inode usage 0x");
+            video.write_hex_u32(bg.inode_usage_bitmap);
+            video.write_string(b" | Directory count 0x");
+            video.write_hex_u16(bg.directory_count);
+            video.write_string(b" | Free blocks count 0x");
+            video.write_hex_u16(bg.free_blocks_count);
+            video.write_string(b" | Free inodes count 0x");
+            video.write_hex_u16(bg.free_inodes_count);
+            video.write_string(b"\n\n");
+        }
     }
 
     #[allow(clippy::empty_loop)]
