@@ -14,20 +14,22 @@ default = []
 
 [profile.dev]
 panic = "abort"
-opt-level = "z"
+opt-level = 1
+
+debug = true
+debug-assertions = false
+overflow-checks = false
+incremental = false
 
 [profile.release]
 panic = "abort"
 opt-level = "z"
 overflow-checks = false
+debug-assertions = false
 debug = true
 
 [package.metadata.cargo-xbuild.default-target]
 i686-unknown-none = true
-
-[build]
-target = "linker.ld"
-rustflags = ["-C", "link-arg=-Tlinker.ld", "-C", "link-arg=--oformat=binary"]
 
 [package.metadata]
 rustflags = ["-C", "link-args=-Tlinker.ld"]

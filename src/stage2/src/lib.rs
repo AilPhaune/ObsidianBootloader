@@ -1,11 +1,13 @@
 #![no_std]
 #![no_main]
 #![feature(sync_unsafe_cell)]
+#![feature(optimize_attribute)]
 
 pub mod bios;
+pub mod e9;
 pub mod fs;
-pub mod mem;
 pub mod io;
+pub mod mem;
 pub mod video;
 
 pub mod eflags {
@@ -44,11 +46,11 @@ pub mod eflags {
     pub const VIP: usize = 0b00000000000100000000000000000000;
 }
 
-use bios::{DiskError, ExtendedDisk};
-use fs::{Ext2Error, Ext2FileSystem};
-use mem::{detect_system_memory, mem_free, mem_total, mem_used};
+use bios::ExtendedDisk;
+use fs::Ext2FileSystem;
+use mem::{detect_system_memory, get_mem_free, get_mem_total, get_mem_used};
 
-use crate::video::{ Video, Color };
+use crate::video::{Color, Video};
 
 #[macro_export]
 macro_rules! integer_enum_impl {
@@ -126,7 +128,7 @@ pub extern "cdecl" fn rust_entry(bios_idt: usize, boot_drive: usize) -> ! {
         video.write_string(b"Booting from drive 0x");
         video.write_hex_u8(boot_drive as u8);
         video.write_char(b'\n');
-    
+
         let extended_disk = ExtendedDisk::new(boot_drive as u8, bios_idt);
         if !extended_disk.check_present() {
             kpanic();
@@ -145,92 +147,22 @@ pub extern "cdecl" fn rust_entry(bios_idt: usize, boot_drive: usize) -> ! {
         macro_rules! show_mem {
             () => {
                 video.write_string(b"Free/Used/Total: 0x");
-                video.write_hex_u32(mem_free() as u32);
+                video.write_hex_u32(get_mem_free() as u32);
                 video.write_string(b" / 0x");
-                video.write_hex_u32(mem_used() as u32);
+                video.write_hex_u32(get_mem_used() as u32);
                 video.write_string(b" / 0x");
-                video.write_hex_u32(mem_total() as u32);
+                video.write_hex_u32(get_mem_total() as u32);
                 video.write_char(b'\n');
             };
         }
 
-        let ext2 = Ext2FileSystem::mount_ro(extended_disk).unwrap_or_else(|e| {
-            match e {
-                Ext2Error::FailedMemAlloc => {
-                    video.write_string(b"Failed to allocate memory\n");
-                },
-                Ext2Error::BadDiskSectorSize(s) => {
-                    video.write_string(b"Bad disk sector size: 0x");
-                    video.write_hex_u16(s);
-                    video.write_char(b'\n');
-                }
-                Ext2Error::BadBlockSize(bs, ss) => {
-                    video.write_string(b"Bad block size: 0x");
-                    video.write_hex_u32(bs as u32);
-                    video.write_string(b" is not an integer multiple of the disk sector size 0x");
-                    video.write_hex_u16(ss);
-                    video.write_char(b'\n');
-                }
-                Ext2Error::BadBlockGroupDescriptorTableEntrySize(a, b) => {
-                    video.write_string(b"Bad block group descriptor table entry size: 0x");
-                    video.write_hex_u32(a as u32);
-                    video.write_string(b" != 0x");
-                    video.write_hex_u32(b as u32);
-                    video.write_char(b'\n');
-                }
-                Ext2Error::NullBlockSize => {
-                    video.write_string(b"Null block size\n");
-                }
-                Ext2Error::BadSuperblock => {
-                    video.write_string(b"Bad superblock\n");
-                }
-                Ext2Error::DiskError(e) => {
-                    video.write_string(b"Disk error: ");
-                    match e {
-                        DiskError::ReadError(c) => {
-                            video.write_string(b"read error 0x");
-                            video.write_hex_u32(c as u32);
-                        },
-                        DiskError::ReadParametersError(c) => {
-                            video.write_string(b"read parameters error 0x");
-                            video.write_hex_u32(c as u32);
-                        },
-                        DiskError::OutputBufferTooSmall => {
-                            video.write_string(b"output buffer too small");
-                        },
-                        DiskError::InvalidDiskParameters => {
-                            video.write_string(b"invalid disk parameters");
-                        },
-                    }
-                    video.write_char(b'\n');
-                }
-            }
-            kpanic();
-        });
+        let mut ext2 = Ext2FileSystem::mount_ro(extended_disk).unwrap_or_else(|e| e.panic());
+        video.write_string(b"Mounted ext2\n");
         show_mem!();
 
-        video.write_string(b"Num block groups: 0x");
-        video.write_hex_u32(ext2.block_groups.len() as u32);
-        video.write_char(b'\n');
-        for (i, bg) in ext2.block_groups.iter().enumerate() {
-            video.write_string(b"Block group: 0x");
-            video.write_hex_u8(i as u8);
-            video.write_string(b"\nBlock usage 0x");
-            video.write_hex_u32(bg.block_usage_bitmap);
-            video.write_string(b" | Inode table 0x");
-            video.write_hex_u32(bg.inode_table_block);
-            video.write_string(b" | Inode usage 0x");
-            video.write_hex_u32(bg.inode_usage_bitmap);
-            video.write_string(b" | Directory count 0x");
-            video.write_hex_u16(bg.directory_count);
-            video.write_string(b" | Free blocks count 0x");
-            video.write_hex_u16(bg.free_blocks_count);
-            video.write_string(b" | Free inodes count 0x");
-            video.write_hex_u16(bg.free_inodes_count);
-            video.write_string(b"\n\n");
-        }
-    }
+        let root_fd = ext2.open(2).unwrap_or_else(|e| e.panic());
 
-    #[allow(clippy::empty_loop)]
-    loop {}
+        #[allow(clippy::empty_loop)]
+        loop {}
+    }
 }

@@ -1,6 +1,6 @@
 use core::ptr::addr_of;
 
-use crate::{eflags, ptr_to_seg_off, seg_off_to_ptr, video::Video};
+use crate::{eflags, mem::Buffer, ptr_to_seg_off, seg_off_to_ptr, video::Video};
 
 #[repr(C, packed)]
 pub struct BiosInterruptResult {
@@ -69,11 +69,41 @@ pub struct DiskAccessPacket {
 }
 
 unsafe extern "cdecl" {
-    pub unsafe fn unsafe_call_bios_interrupt(bios_idt: usize, interrupt: usize, eax: usize, ebx: usize, ecx: usize, edx: usize, esi: usize, edi: usize, ds: usize, es: usize, fs: usize, gs: usize) -> usize;
+    pub unsafe fn unsafe_call_bios_interrupt(
+        bios_idt: usize,
+        interrupt: usize,
+        eax: usize,
+        ebx: usize,
+        ecx: usize,
+        edx: usize,
+        esi: usize,
+        edi: usize,
+        ds: usize,
+        es: usize,
+        fs: usize,
+        gs: usize,
+    ) -> usize;
 }
 
-static mut DAP: DiskAccessPacket = DiskAccessPacket { size: 0x10, null: 0, sector_count: 0, offset: 0, segment: 0, lba: 0 };
-static mut PARAMS: DiskParamsRaw = DiskParamsRaw { size: 0x1E, info: 0, cylinders: 0, heads: 0, sectors_per_track: 0, sectors_hi: 0, sectors_lo: 0, bytes_per_sector: 0, ptr: 0 };
+static mut DAP: DiskAccessPacket = DiskAccessPacket {
+    size: 0x10,
+    null: 0,
+    sector_count: 0,
+    offset: 0,
+    segment: 0,
+    lba: 0,
+};
+static mut PARAMS: DiskParamsRaw = DiskParamsRaw {
+    size: 0x1E,
+    info: 0,
+    cylinders: 0,
+    heads: 0,
+    sectors_per_track: 0,
+    sectors_hi: 0,
+    sectors_lo: 0,
+    bytes_per_sector: 0,
+    ptr: 0,
+};
 static mut BUFF: [u8; 4096] = [0; 4096];
 
 #[derive(Clone, Copy)]
@@ -89,6 +119,7 @@ pub struct DiskParams {
 pub enum DiskError {
     OutputBufferTooSmall,
     InvalidDiskParameters,
+    FailedMemAlloc,
     ReadError(usize),
     ReadParametersError(usize),
 }
@@ -101,19 +132,33 @@ pub struct ExtendedDisk {
 
 impl ExtendedDisk {
     pub fn new(disk: u8, bios_idt: usize) -> Self {
-        Self { disk, bios_idt, params: None }
+        Self {
+            disk,
+            bios_idt,
+            params: None,
+        }
     }
 
     pub fn check_present(&self) -> bool {
         unsafe {
             let result = unsafe_call_bios_interrupt(
-                self.bios_idt, 0x13,
-                0x4100, 0x55AA, 0, self.disk as usize, 0, 0, 0, 0, 0, 0
+                self.bios_idt,
+                0x13,
+                0x4100,
+                0x55AA,
+                0,
+                self.disk as usize,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
             ) as *const BiosInterruptResult;
 
             ((*result).eflags & eflags::CF) == 0
-            && ((*result).ebx & 0xFFFF) == 0xAA55
-            && ((*result).ecx & 0b101) == 0b101
+                && ((*result).ebx & 0xFFFF) == 0xAA55
+                && ((*result).ecx & 0b101) == 0b101
         }
     }
 
@@ -125,8 +170,18 @@ impl ExtendedDisk {
             let (seg, off) = ptr_to_seg_off(addr_of!(PARAMS) as usize);
 
             let result = unsafe_call_bios_interrupt(
-                self.bios_idt, 0x13,
-                0x4800, 0, 0, self.disk as usize, off as usize, 0, seg as usize, seg as usize, 0, 0
+                self.bios_idt,
+                0x13,
+                0x4800,
+                0,
+                0,
+                self.disk as usize,
+                off as usize,
+                0,
+                seg as usize,
+                seg as usize,
+                0,
+                0,
             ) as *const BiosInterruptResult;
 
             if ((*result).eflags & eflags::CF) != 0 {
@@ -146,7 +201,7 @@ impl ExtendedDisk {
         }
     }
 
-    pub fn read_sector(&mut self, lba: u64, buffer: &mut [u8]) -> Result<(), DiskError> {
+    pub fn read_sector(&mut self, lba: u64, buffer: &mut Buffer) -> Result<(), DiskError> {
         let bps = self.get_params()?.bytes_per_sector as usize;
         if buffer.len() < bps {
             return Err(DiskError::OutputBufferTooSmall);
@@ -166,12 +221,22 @@ impl ExtendedDisk {
             };
 
             let result = unsafe_call_bios_interrupt(
-                self.bios_idt, 0x13,
-                0x4200, 0, 0, self.disk as usize, dap_off as usize, 0, dap_seg as usize, dap_seg as usize, 0, 0
+                self.bios_idt,
+                0x13,
+                0x4200,
+                0,
+                0,
+                self.disk as usize,
+                dap_off as usize,
+                0,
+                dap_seg as usize,
+                dap_seg as usize,
+                0,
+                0,
             ) as *const BiosInterruptResult;
 
             if ((*result).eflags & eflags::CF) != 0 {
-                return Err(DiskError::ReadError(((*result).eax & 0xFFFF) >> 8))
+                return Err(DiskError::ReadError(((*result).eax & 0xFFFF) >> 8));
             }
 
             let output_buf = seg_off_to_ptr(segment, offset) as *const u8;
@@ -184,7 +249,11 @@ impl ExtendedDisk {
 
     /// # Safety
     /// Passed buffer must be at least `bytes_per_sector` long
-    pub unsafe fn unsafe_read_sector_to_buffer(&mut self, lba: u64, buffer: *mut u8) -> Result<(), DiskError> {
+    pub unsafe fn unsafe_read_sector_to_buffer(
+        &mut self,
+        lba: u64,
+        buffer: *mut u8,
+    ) -> Result<(), DiskError> {
         let bps = self.get_params()?.bytes_per_sector as usize;
         let (segment, offset) = ptr_to_seg_off(addr_of!(BUFF) as usize);
         unsafe {
@@ -199,12 +268,22 @@ impl ExtendedDisk {
             };
 
             let result = unsafe_call_bios_interrupt(
-                self.bios_idt, 0x13,
-                0x4200, 0, 0, self.disk as usize, dap_off as usize, 0, dap_seg as usize, dap_seg as usize, 0, 0
+                self.bios_idt,
+                0x13,
+                0x4200,
+                0,
+                0,
+                self.disk as usize,
+                dap_off as usize,
+                0,
+                dap_seg as usize,
+                dap_seg as usize,
+                0,
+                0,
             ) as *const BiosInterruptResult;
 
             if ((*result).eflags & eflags::CF) != 0 {
-                return Err(DiskError::ReadError(((*result).eax & 0xFFFF) >> 8))
+                return Err(DiskError::ReadError(((*result).eax & 0xFFFF) >> 8));
             }
 
             let output_buf = seg_off_to_ptr(segment, offset) as *const u8;
@@ -215,21 +294,21 @@ impl ExtendedDisk {
         Ok(())
     }
 
-    #[no_mangle]
-    pub fn read_to_buffer(&mut self, lba: u64, buffer: &mut [u8]) -> Result<(), DiskError> {
+    pub fn read_to_buffer(&mut self, lba: u64, buffer: &mut Buffer) -> Result<(), DiskError> {
         let bps = self.get_params()?.bytes_per_sector as usize;
         if bps == 0 {
             return Err(DiskError::InvalidDiskParameters);
         }
         let sector_count = buffer.len() / bps;
+        let mut sector_buffer = Buffer::new(bps).ok_or(DiskError::FailedMemAlloc)?;
         for i in 0..sector_count {
             let begin = i * bps;
             let end = (i + 1) * bps;
             if begin >= buffer.len() || end >= buffer.len() || end <= begin {
                 break;
             }
-            let sub_buffer = &mut buffer[begin..end];
-            self.read_sector(lba + i as u64, sub_buffer)?;
+            self.read_sector(lba + i as u64, &mut sector_buffer)?;
+            sector_buffer.copy_to(0, buffer, begin, bps);
         }
         Ok(())
     }
