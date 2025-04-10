@@ -98,7 +98,7 @@ macro_rules! video_memory {
     }};
 }
 
-fn get_hex_digit(value: u8) -> u8 {
+pub fn get_hex_digit(value: u8) -> u8 {
     if value < 10 {
         b'0' + value
     } else {
