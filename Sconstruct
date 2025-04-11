@@ -15,14 +15,14 @@ def all_of(list_patterns: list[str]):
 
 env.Command('build/boot.bin', glob('src/boot/**/*.asm', recursive=True), 'nasm -f bin src/boot/boot.asm -o $TARGET')
 env.Command('build/stage1.bin', glob('src/stage1/**/*.asm', recursive=True), 'nasm -f bin src/stage1/stage1.asm -o $TARGET')
-env.Command('build/bootloader_stage2.bin', all_of(['src/stage2/**/*.asm', 'src/stage2/**/*.rs']), [
+env.Command('build/bootloader_stage2.bin', all_of(['src/stage2/**/*']), [
     f'/usr/bin/sh -c "cd src/stage2 && make MODE={mode}"'
 ])
 
-env.Command('build/bootloader.bin', ['build/boot.bin', 'build/stage1.bin', 'build/bootloader_stage2.bin'], [
-    'dd if=/dev/zero of=build/bootloader.bin count=16 bs=1M',
-    'mkfs.ext2 build/bootloader.bin',
-    'dd if=build/boot.bin of=build/bootloader.bin conv=notrunc',
-    'dd if=build/stage1.bin of=build/bootloader.bin bs=512 oseek=1 conv=notrunc',
-    'dd if=build/bootloader_stage2.bin of=build/bootloader.bin bs=512 oseek=11 conv=notrunc'
+env.Command('build/disk.img', ['build/boot.bin', 'build/stage1.bin', 'build/bootloader_stage2.bin'], [
+    'dd if=/dev/zero of=build/disk.img count=32 bs=1M',
+    'sfdisk build/disk.img < sfdisk_parts_ext2',
+    'dd if=build/boot.bin of=build/disk.img bs=446 count=1 conv=notrunc',
+    'dd if=build/stage1.bin of=build/disk.img bs=512 oseek=34 conv=notrunc',
+    'dd if=build/bootloader_stage2.bin of=build/disk.img bs=512 oseek=35 conv=notrunc',
 ])

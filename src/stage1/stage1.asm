@@ -62,7 +62,7 @@ stage1_pmode:
     mov eax, [idt_store]
     push eax
 
-    jmp 0x9000
+    jmp 0x7e00
 
     pop eax
     pop edx

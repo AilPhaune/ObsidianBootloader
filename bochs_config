@@ -1,7 +1,7 @@
 megs: 128
 romimage: file=/usr/share/bochs/BIOS-bochs-latest
 vgaromimage: file=/usr/share/bochs/VGABIOS-lgpl-latest
-ata0-master: type=disk, path="build/bootloader.bin", mode=flat, cylinders=0, heads=0, spt=0
+ata0-master: type=disk, path="build/disk.img", mode=flat, cylinders=0, heads=0, spt=0
 boot: disk
 mouse: enabled=0
 display_library: sdl2, options="gui_debug"

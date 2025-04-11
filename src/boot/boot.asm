@@ -45,7 +45,7 @@ relocate:
     mov word [disk_address_packet.dap_dest_segment], 0x07c0
     mov word [disk_address_packet.dap_dest_offset], 0x0000
     mov word [disk_address_packet.dap_num_sectors_read], STAGE1_SIZE
-    mov dword [disk_address_packet.dap_lba_lo], 1
+    mov dword [disk_address_packet.dap_lba_lo], 34
     call read_sectors
 
     jmp 0x0000:0x7c00

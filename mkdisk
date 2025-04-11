@@ -1,0 +1,17 @@
+#!/usr/bin/sh
+
+set -e
+
+loop_device=$(sudo losetup --show -fP build/disk.img)
+echo Loopback device: ${loop_device}
+
+sudo mkfs.ext2 ${loop_device}p1
+mkdir -p disk_mnt
+sudo mount ${loop_device}p1 disk_mnt
+
+echo "Hello World" > disk_mnt/hello.txt
+
+sudo umount disk_mnt
+rmdir disk_mnt
+sudo losetup -d ${loop_device}
+echo Done.

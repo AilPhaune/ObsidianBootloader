@@ -2,7 +2,7 @@ ENTRY(stage3_entry)
 
 SECTIONS
 {
-    . = 0x9000; /* Start address */
+    . = 0x7e00; /* Start address */
 
     .text : {
         *(.text.stage3_entry)
