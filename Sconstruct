@@ -5,6 +5,14 @@ from glob import glob
 
 env = Environment(ENV = os.environ)
 mode = ARGUMENTS.get('mode', 'release')
+size = int(ARGUMENTS.get('size', '32'))
+
+if size < 32:
+    print('Size must be at least 32 MiB')
+    exit(1)
+
+env['MODE'] = mode
+env['SIZE'] = size
 
 def all_of(list_patterns: list[str]):
     result = []
@@ -20,7 +28,7 @@ env.Command('build/bootloader_stage2.bin', all_of(['src/stage2/**/*']), [
 ])
 
 env.Command('build/disk.img', ['build/boot.bin', 'build/stage1.bin', 'build/bootloader_stage2.bin'], [
-    'dd if=/dev/zero of=build/disk.img count=32 bs=1M',
+    f'dd if=/dev/zero of=build/disk.img count=${size} bs=1M',
     'sfdisk build/disk.img < sfdisk_parts_ext2',
     'dd if=build/boot.bin of=build/disk.img bs=446 count=1 conv=notrunc',
     'dd if=build/stage1.bin of=build/disk.img bs=512 oseek=34 conv=notrunc',
