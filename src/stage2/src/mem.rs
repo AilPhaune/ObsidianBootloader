@@ -5,7 +5,7 @@ use core::{
 
 use crate::{
     bios::{unsafe_call_bios_interrupt, BiosInterruptResult},
-    eflags, kpanic, ptr_to_seg_off,
+    eflags, kpanic, printf, ptr_to_seg_off,
     video::Video,
 };
 
@@ -123,7 +123,7 @@ pub fn detect_system_memory(bios_idt: usize) -> Result<(), u8> {
 
             *header = MemoryBlock {
                 size: max_addr - (header as usize) - size_of::<MemoryBlock>(),
-                free: true,
+                free: 1,
                 prev: ptr::null_mut(),
                 next: ptr::null_mut(),
             };
@@ -183,6 +183,29 @@ pub unsafe fn memset(dst: usize, value: u8, count: usize) {
     }
 }
 
+#[no_mangle]
+#[inline(never)]
+/// # Safety
+/// Fills `count` bytes into `dst` with the given `value`
+pub unsafe fn memcmp(a: usize, b: usize, count: usize) -> isize {
+    let mut p = a as *const u8;
+    let mut q = b as *const u8;
+    let mut c = count;
+    loop {
+        if c == 0 {
+            break 0;
+        }
+        let va = *p;
+        let vb = *q;
+        if *p != *q {
+            break if va < vb { -1 } else { 1 };
+        }
+        p = p.add(1);
+        q = q.add(1);
+        c -= 1;
+    }
+}
+
 /// # Safety
 /// Copies `size` bytes from `src` to `dst`
 pub unsafe fn mem_cpy<A, B>(dst: *mut A, src: *const B, size: usize) {
@@ -208,7 +231,7 @@ where
 #[derive(Clone, Copy)]
 struct MemoryBlock {
     size: usize,
-    free: bool,
+    free: u8,
     prev: *mut MemoryBlock,
     next: *mut MemoryBlock,
 }
@@ -232,8 +255,11 @@ fn mem_alloc<T>(size: usize) -> Option<*mut T> {
     let mut header = get_first_header();
     loop {
         let mut header_v = unsafe { header.read_unaligned() };
-        if header_v.free && header_v.size >= size {
-            header_v.free = false;
+        if header_v.free != 0 && header_v.size >= size {
+            header_v.free = 0;
+            unsafe {
+                header.write_unaligned(header_v);
+            }
             // Split the header
             let header_end = (header as usize) + header_v.size;
             let desired_end = (header as usize) + size;
@@ -247,7 +273,7 @@ fn mem_alloc<T>(size: usize) -> Option<*mut T> {
                 header_v.size = next_header - (header as usize) - header_size;
                 let next2_addr = header_v.next;
                 let new_header = MemoryBlock {
-                    free: true,
+                    free: 1,
                     prev: header,
                     next: next2_addr,
                     size: header_end - next_header - header_size,
@@ -280,11 +306,14 @@ fn mem_alloc<T>(size: usize) -> Option<*mut T> {
 }
 
 fn mem_free<T>(ptr: *mut T) {
+    if ptr.is_null() {
+        return;
+    }
     let header_size = size_of::<MemoryBlock>();
     let header = ((ptr as usize) - header_size) as *mut MemoryBlock;
 
     let mut header_v = unsafe { header.read_unaligned() };
-    header_v.free = true;
+    header_v.free = 1;
 
     unsafe {
         MEM_USED -= header_v.size + header_size;
@@ -295,7 +324,7 @@ fn mem_free<T>(ptr: *mut T) {
     if !header_v.next.is_null() {
         let next_header = header_v.next;
         let next_header_v = unsafe { next_header.read_unaligned() };
-        if next_header_v.free {
+        if next_header_v.free != 0 {
             // Update size
             header_v.size += next_header_v.size + header_size;
             header_v.next = next_header_v.next;
@@ -315,7 +344,7 @@ fn mem_free<T>(ptr: *mut T) {
     if !header_v.prev.is_null() {
         let prev_header = header_v.prev;
         let mut prev_header_v = unsafe { prev_header.read_unaligned() };
-        if prev_header_v.free {
+        if prev_header_v.free != 0 {
             // Update prev's size, as we get deleted
             prev_header_v.size += header_v.size + header_size;
             prev_header_v.next = header_v.next;
@@ -349,7 +378,7 @@ unsafe fn mem_realloc<T>(ptr: *mut T, size: usize) -> Result<*mut T, *mut T> {
     if !header_v.next.is_null() {
         let next_header = header_v.next;
         let next_header_v = unsafe { next_header.read_unaligned() };
-        if next_header_v.free {
+        if next_header_v.free != 0 {
             header_v.size += next_header_v.size + header_size;
             header_v.next = next_header_v.next;
             if !header_v.next.is_null() {
@@ -397,7 +426,14 @@ where
 
     /// # Safety
     /// ptr must be a pointer returned by malloc and point to a valid and initialized T
+    /// ptr is invalidated when this Box is dropped
     pub unsafe fn from_raw(ptr: *mut T) -> Self {
+        if !ptr.is_aligned() {
+            unsafe {
+                Video::get().write_string(b"Unaligned pointer.\r\n");
+            }
+            kpanic();
+        }
         Self { ptr }
     }
 }
@@ -417,6 +453,7 @@ where
 {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
+            printf!(b"DROPPED BOX %x\r\n", self.ptr as u32);
             mem_free(self.ptr);
         }
     }
@@ -472,22 +509,34 @@ impl<T> Vec<T>
 where
     T: Sized,
 {
-    pub fn new(capcity: usize) -> Self {
-        if capcity == 0 {
+    #[inline(always)]
+    pub fn get_element_size_bytes() -> usize {
+        let raw_size = size_of::<T>();
+        let alignment = align_of::<T>();
+        if raw_size % alignment == 0 {
+            raw_size
+        } else {
+            raw_size + alignment - (raw_size % alignment)
+        }
+    }
+
+    pub fn new(capacity: usize) -> Self {
+        if capacity == 0 {
             kpanic();
         }
         Self {
-            ptr: mem_alloc(size_of::<T>()).unwrap_or_else(|| kpanic()),
+            ptr: mem_alloc(capacity * Vec::<T>::get_element_size_bytes())
+                .unwrap_or_else(|| kpanic()),
             len: 0,
-            cap: capcity,
+            cap: capacity,
         }
     }
 
     pub fn ensure_capacity(&mut self, capacity: usize) {
         if self.cap < capacity {
             unsafe {
-                self.ptr =
-                    mem_realloc(self.ptr, capacity * size_of::<T>()).unwrap_or_else(|_| kpanic());
+                self.ptr = mem_realloc(self.ptr, capacity * Vec::<T>::get_element_size_bytes())
+                    .unwrap_or_else(|_| kpanic());
             }
         }
     }
@@ -500,15 +549,20 @@ where
             self.cap *= 2;
         }
         unsafe {
-            self.ptr =
-                mem_realloc(self.ptr, self.cap * size_of::<T>()).unwrap_or_else(|_| kpanic());
+            self.ptr = mem_realloc(self.ptr, self.cap * Vec::<T>::get_element_size_bytes())
+                .unwrap_or_else(|_| kpanic());
         }
+    }
+
+    #[inline(always)]
+    fn get_ptr_for_idx(&self, idx: usize) -> *mut T {
+        ((self.ptr as usize) + idx * Vec::<T>::get_element_size_bytes()) as *mut T
     }
 
     pub fn push(&mut self, value: T) {
         self.grow(self.len + 1);
         unsafe {
-            *self.ptr.add(self.len) = value;
+            *self.get_ptr_for_idx(self.len) = value;
         }
         self.len += 1;
     }
@@ -529,7 +583,7 @@ where
         if index >= self.len {
             return None;
         }
-        unsafe { Some(&*self.ptr.add(index)) }
+        unsafe { Some(&*self.get_ptr_for_idx(index)) }
     }
 
     pub fn pop(&mut self) -> Option<T> {
@@ -540,8 +594,8 @@ where
         self.len -= 1;
 
         unsafe {
-            let ptr = self.ptr.add(self.len);
-            let value = ptr.read_unaligned();
+            let ptr = self.get_ptr_for_idx(self.len);
+            let value = ptr.read();
             Some(value)
         }
     }
@@ -652,6 +706,7 @@ impl Buffer {
 
     /// # Safety
     /// Pointer must be handled safely by the caller
+    /// Pointer is invalid after this buffer is dropped
     pub unsafe fn get_ptr(&self) -> *mut u8 {
         self.ptr
     }
@@ -679,6 +734,12 @@ impl Buffer {
 
     pub fn iter_mut<'a>(&'a mut self) -> IterBufferMut<'a> {
         IterBufferMut { vec: self, idx: 0 }
+    }
+
+    pub fn boxed<T>(mut self) -> Box<T> {
+        let ptr = self.ptr;
+        self.ptr = ptr::null_mut();
+        unsafe { Box::from_raw(ptr as *mut T) }
     }
 }
 
