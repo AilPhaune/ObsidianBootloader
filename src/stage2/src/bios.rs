@@ -1,6 +1,6 @@
 use core::ptr::addr_of;
 
-use crate::{eflags, mem::Buffer, ptr_to_seg_off, seg_off_to_ptr, video::Video};
+use crate::{eflags, kpanic, mem::Buffer, ptr_to_seg_off, seg_off_to_ptr, video::Video};
 
 #[repr(C, packed)]
 pub struct BiosInterruptResult {
@@ -52,8 +52,8 @@ pub struct DiskParamsRaw {
     cylinders: u32,
     heads: u32,
     sectors_per_track: u32,
-    sectors_hi: u32,
     sectors_lo: u32,
+    sectors_hi: u32,
     bytes_per_sector: u16,
     ptr: u32,
 }
@@ -122,6 +122,36 @@ pub enum DiskError {
     FailedMemAlloc,
     ReadError(usize),
     ReadParametersError(usize),
+}
+
+impl DiskError {
+    pub fn panic(&self) -> ! {
+        unsafe {
+            let video = Video::get();
+            video.write_string(b"Disk error: ");
+            match self {
+                DiskError::ReadError(c) => {
+                    video.write_string(b"read error 0x");
+                    video.write_hex_u32(*c as u32);
+                }
+                DiskError::ReadParametersError(c) => {
+                    video.write_string(b"read parameters error 0x");
+                    video.write_hex_u32(*c as u32);
+                }
+                DiskError::OutputBufferTooSmall => {
+                    video.write_string(b"output buffer too small");
+                }
+                DiskError::InvalidDiskParameters => {
+                    video.write_string(b"invalid disk parameters");
+                }
+                DiskError::FailedMemAlloc => {
+                    video.write_string(b"failed to allocate memory");
+                }
+            }
+            video.write_char(b'\n');
+        }
+        kpanic();
+    }
 }
 
 pub struct ExtendedDisk {

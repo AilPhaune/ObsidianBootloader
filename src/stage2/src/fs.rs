@@ -2,8 +2,10 @@ use core::ptr;
 
 use crate::{
     bios::{DiskError, ExtendedDisk},
+    gpt::DiskRange,
     kpanic,
     mem::{Box, Buffer, Vec},
+    printf,
     video::Video,
 };
 
@@ -220,27 +222,8 @@ impl Ext2Error {
                     video.write_char(b'\n');
                 }
                 Ext2Error::DiskError(e) => {
-                    video.write_string(b"Disk error: ");
-                    match e {
-                        DiskError::ReadError(c) => {
-                            video.write_string(b"read error 0x");
-                            video.write_hex_u32(*c as u32);
-                        }
-                        DiskError::ReadParametersError(c) => {
-                            video.write_string(b"read parameters error 0x");
-                            video.write_hex_u32(*c as u32);
-                        }
-                        DiskError::OutputBufferTooSmall => {
-                            video.write_string(b"output buffer too small");
-                        }
-                        DiskError::InvalidDiskParameters => {
-                            video.write_string(b"invalid disk parameters");
-                        }
-                        DiskError::FailedMemAlloc => {
-                            video.write_string(b"failed to allocate memory");
-                        }
-                    }
-                    video.write_char(b'\n');
+                    video.write_string(b"Ext2 file system error caused by:\n");
+                    e.panic();
                 }
             }
         }
@@ -347,6 +330,7 @@ impl InodeReadingLocation {
 pub struct CachedInodeReadingLocation {
     location: InodeReadingLocation,
     inode: Ext2Inode,
+    max_block: usize,
 
     table1: Buffer,
     table1_addr: usize,
@@ -361,14 +345,21 @@ pub struct CachedInodeReadingLocation {
 impl CachedInodeReadingLocation {
     pub fn new(ext2: &Ext2FileSystem, inode: Ext2Inode) -> Result<Self, Ext2Error> {
         let size = ext2.block_size();
+        if size == 0 {
+            return Err(Ext2Error::NullBlockSize);
+        }
         let location =
             InodeReadingLocation::new(ext2.block_size() / 4, 0).ok_or(Ext2Error::NullBlockSize)?;
         let table1 = Buffer::new(size).ok_or(Ext2Error::FailedMemAlloc)?;
         let table2 = Buffer::new(size).ok_or(Ext2Error::FailedMemAlloc)?;
         let table3 = Buffer::new(size).ok_or(Ext2Error::FailedMemAlloc)?;
+
+        let max_block = ((inode.size_lo as usize) / size) - 1;
+
         Ok(Self {
             location,
             inode,
+            max_block,
             table1_addr: 0,
             table2_addr: 0,
             table3_addr: 0,
@@ -510,30 +501,57 @@ impl CachedInodeReadingLocation {
         &mut self,
         ext2: &mut Ext2FileSystem,
         buffer: &mut Buffer,
-    ) -> Result<(), Ext2Error> {
-        if buffer.len() < ext2.block_size() {
-            return Err(Ext2Error::BufferTooSmall(buffer.len(), ext2.block_size()));
+    ) -> Result<usize, Ext2Error> {
+        let bs = ext2.block_size();
+        if bs == 0 {
+            return Err(Ext2Error::NullBlockSize);
+        }
+        if buffer.len() < bs {
+            return Err(Ext2Error::BufferTooSmall(buffer.len(), bs));
         }
         let block = self.get_next_block()?;
         ext2.read_block(block as u64, buffer)?;
-        Ok(())
+        if block < self.max_block {
+            Ok(bs)
+        } else {
+            let read = (self.inode.size_lo as usize) % bs;
+            Ok(if read == 0 { bs } else { read })
+        }
+    }
+
+    pub fn advance(&mut self) -> bool {
+        match self.get_next_block() {
+            Ok(block) => {
+                if block >= self.max_block {
+                    false
+                } else {
+                    self.location.advance();
+                    true
+                }
+            }
+            Err(_) => false,
+        }
     }
 }
 
 pub struct Ext2FileSystem {
     disk: ExtendedDisk,
+    partition: DiskRange,
     superblock: Box<Ext2SuperBlock>,
     block_groups: Vec<Ext2BlockGroupDescriptor>,
     sectors_per_block: usize,
+    sector_size: usize,
 }
 
 impl Ext2FileSystem {
-    pub fn mount_ro(disk: ExtendedDisk) -> Result<Self, Ext2Error> {
+    pub fn mount_ro(disk: ExtendedDisk, partition: DiskRange) -> Result<Self, Ext2Error> {
         let mut ext2 = Self {
             disk,
+            partition,
             superblock: unsafe { Box::from_raw(ptr::null_mut()) },
             block_groups: Vec::default(),
             sectors_per_block: 0,
+            sector_size: 0,
         };
         ext2.read_superblock()?;
         ext2.read_block_group_descriptor_table()?;
@@ -546,6 +564,8 @@ impl Ext2FileSystem {
         if bps != 512 && bps != 4096 {
             return Err(Ext2Error::BadDiskSectorSize(params.bytes_per_sector));
         }
+        self.sector_size = bps;
+
         let mut superblock_buffer = Buffer::new(1024).ok_or(Ext2Error::FailedMemAlloc)?;
         let mut buffer = Buffer::new(4096).ok_or(Ext2Error::FailedMemAlloc)?;
 
@@ -559,13 +579,11 @@ impl Ext2FileSystem {
         let start_lba = 1024 / bps;
         let buf_idx = 1024 % bps;
 
-        unsafe {
-            self.disk
-                .read_to_buffer(start_lba as u64, &mut buffer)
-                .map_err(Ext2Error::DiskError)?;
-            buffer.copy_to(buf_idx, &mut superblock_buffer, 0, 1024);
-            self.superblock = Box::from_raw(superblock_buffer.get_ptr() as *mut Ext2SuperBlock);
-        }
+        self.disk
+            .read_to_buffer(start_lba as u64 + self.partition.start_lba, &mut buffer)
+            .map_err(Ext2Error::DiskError)?;
+        buffer.copy_to(buf_idx, &mut superblock_buffer, 0, 1024);
+        self.superblock = buffer.boxed::<Ext2SuperBlock>();
 
         if (self.block_size() % bps) != 0 {
             // A block isn't a whole amount of logical sectors
@@ -618,13 +636,13 @@ impl Ext2FileSystem {
     }
 
     unsafe fn unsafe_read_block(&mut self, block: u64, buffer: *mut u8) -> Result<(), Ext2Error> {
-        let begin_lba: u64 = block * self.sectors_per_block as u64;
+        let begin_lba: u64 = block * self.sectors_per_block as u64 + self.partition.start_lba;
         for i in 0..self.sectors_per_block {
+            let lba = begin_lba + i as u64;
+            let output_addr = buffer.add(i * self.sector_size);
+
             self.disk
-                .unsafe_read_sector_to_buffer(
-                    begin_lba + i as u64,
-                    buffer.add(i * self.block_size()),
-                )
+                .unsafe_read_sector_to_buffer(lba, output_addr)
                 .map_err(Ext2Error::DiskError)?;
         }
         Ok(())
@@ -652,7 +670,7 @@ impl Ext2FileSystem {
         }
     }
 
-    fn block_size(&self) -> usize {
+    pub fn block_size(&self) -> usize {
         1024 << (self.superblock.log_block_size as usize)
     }
 
@@ -686,21 +704,45 @@ impl Ext2FileSystem {
         let group = self.get_inode_group(inode);
         let index = self.get_inode_index_in_group(inode);
 
+        let block_size = self.block_size();
+        if block_size == 0 {
+            return Err(Ext2Error::NullBlockSize);
+        }
+
+        let inode_size = self.inode_size();
+        if inode_size == 0 {
+            printf!(b"NULL INODE SIZE ??\r\n");
+            return Err(Ext2Error::NullBlockSize);
+        }
+
         let block = self
             .block_groups
             .get(group)
             .ok_or(Ext2Error::BadSuperblock)?
             .inode_table_block as u64;
 
-        let offset = index * self.inode_size();
+        let offset = index * inode_size;
         let mut block_buffer = Buffer::new(self.block_size()).ok_or(Ext2Error::FailedMemAlloc)?;
-        let mut buffer = Buffer::new(self.inode_size()).ok_or(Ext2Error::FailedMemAlloc)?;
+        let mut buffer = Buffer::new(inode_size).ok_or(Ext2Error::FailedMemAlloc)?;
 
         unsafe {
             self.read_block(block, &mut block_buffer)?;
-            block_buffer.copy_to(offset, &mut buffer, 0, self.inode_size());
+            if !block_buffer.copy_to(offset, &mut buffer, 0, inode_size) {
+                printf!(
+                    b"\r\n\r\nWHAT THE FUCK ???\r\nblock_buffer %x (len %x) | buffer %x (len %x)\r\nTried copy: source offset %x | dest offset %x | amount %x\r\n",
+                    block_buffer.get_ptr() as u32,
+                    block_buffer.len() as u32,
+                    buffer.get_ptr() as u32,
+                    buffer.len() as u32,
+                    offset as u32,
+                    0,
+                    inode_size as u32
+                );
 
-            let inode = *(buffer.get_ptr() as *mut Ext2Inode);
+                kpanic();
+            }
+
+            let inode = (buffer.get_ptr() as *mut Ext2Inode).read_unaligned();
             Ok(inode)
         }
     }

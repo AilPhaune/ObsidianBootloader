@@ -6,6 +6,7 @@
 pub mod bios;
 pub mod e9;
 pub mod fs;
+pub mod gpt;
 pub mod io;
 pub mod mem;
 pub mod video;
@@ -47,8 +48,9 @@ pub mod eflags {
 }
 
 use bios::ExtendedDisk;
-use fs::Ext2FileSystem;
-use mem::{detect_system_memory, get_mem_free, get_mem_total, get_mem_used};
+use fs::{Ext2Error, Ext2FileSystem};
+use gpt::GUIDPartitionTable;
+use mem::{detect_system_memory, get_mem_free, get_mem_total, get_mem_used, Buffer};
 
 use crate::video::{Color, Video};
 
@@ -129,7 +131,7 @@ pub extern "cdecl" fn rust_entry(bios_idt: usize, boot_drive: usize) -> ! {
         video.write_hex_u8(boot_drive as u8);
         video.write_char(b'\n');
 
-        let extended_disk = ExtendedDisk::new(boot_drive as u8, bios_idt);
+        let mut extended_disk = ExtendedDisk::new(boot_drive as u8, bios_idt);
         if !extended_disk.check_present() {
             kpanic();
         }
@@ -156,11 +158,31 @@ pub extern "cdecl" fn rust_entry(bios_idt: usize, boot_drive: usize) -> ! {
             };
         }
 
-        let mut ext2 = Ext2FileSystem::mount_ro(extended_disk).unwrap_or_else(|e| e.panic());
+        let gpt = GUIDPartitionTable::read(&mut extended_disk).unwrap_or_else(|e| e.panic());
+        let Some(part0) = gpt.get_partitions().get(0) else {
+            video.write_string(b"No partitions !\n");
+            kpanic();
+        };
+        let mut ext2 = Ext2FileSystem::mount_ro(extended_disk, part0.as_disk_range())
+            .unwrap_or_else(|e| e.panic());
         video.write_string(b"Mounted ext2\n");
         show_mem!();
 
-        let root_fd = ext2.open(2).unwrap_or_else(|e| e.panic());
+        let mut root_fd = ext2.open(2).unwrap_or_else(|e| e.panic());
+        let mut buffer =
+            Buffer::new(ext2.block_size()).unwrap_or_else(|| Ext2Error::FailedMemAlloc.panic());
+        loop {
+            let read = root_fd
+                .read_block(&mut ext2, &mut buffer)
+                .unwrap_or_else(|e| e.panic());
+            for i in 0..read {
+                printf!(b"%b ", buffer.get(i).unwrap_or(0u8) as u32);
+            }
+            let adv = root_fd.advance();
+            if !adv {
+                break;
+            }
+        }
 
         #[allow(clippy::empty_loop)]
         loop {}

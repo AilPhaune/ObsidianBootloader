@@ -48,7 +48,7 @@ macro_rules! printf {
         write_string($fmt);
     }};
     ($fmt:expr $(,$arg:expr)*) => {{
-        use $crate::e9::{write_char, write_hex_u32};
+        use $crate::e9::{write_char, write_hex_u8, write_hex_u32};
         let mut iter = $fmt.iter();
         let args = [$($arg),*];
         let mut args_iter = args.iter();
@@ -63,6 +63,11 @@ macro_rules! printf {
                     Some(b'x') => {
                         if let Some(arg) = args_iter.next() {
                             write_hex_u32(*arg as u32);
+                        }
+                    }
+                    Some(b'b') => {
+                        if let Some(arg) = args_iter.next() {
+                            write_hex_u8(*arg as u8);
                         }
                     }
                     _ => {}
