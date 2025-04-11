@@ -583,7 +583,7 @@ impl Ext2FileSystem {
             .read_to_buffer(start_lba as u64 + self.partition.start_lba, &mut buffer)
             .map_err(Ext2Error::DiskError)?;
         buffer.copy_to(buf_idx, &mut superblock_buffer, 0, 1024);
-        self.superblock = buffer.boxed::<Ext2SuperBlock>();
+        self.superblock = superblock_buffer.boxed::<Ext2SuperBlock>();
 
         if (self.block_size() % bps) != 0 {
             // A block isn't a whole amount of logical sectors
