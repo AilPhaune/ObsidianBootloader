@@ -1,5 +1,6 @@
 use crate::{
     io::{inb, outb},
+    mem::Buffer,
     video::get_hex_digit,
 };
 
@@ -41,13 +42,23 @@ pub fn write_hex_u32(value: u32) {
     }
 }
 
+pub fn write_buffer_slice_as_string(buffer: &Buffer, start: usize, end: usize) {
+    for i in start..end {
+        write_char(buffer.get(i).unwrap_or(b'?'));
+    }
+}
+
+pub fn write_buffer_as_string(buffer: &Buffer) {
+    write_buffer_slice_as_string(buffer, 0, buffer.len());
+}
+
 #[macro_export]
 macro_rules! printf {
     ($fmt:expr) => {{
         use $crate::e9::write_string;
         write_string($fmt);
     }};
-    ($fmt:expr $(,$arg:expr)*) => {{
+    ($fmt:literal $(,$arg:expr)*) => {{
         use $crate::e9::{write_char, write_hex_u8, write_hex_u32};
         let mut iter = $fmt.iter();
         let args = [$($arg),*];

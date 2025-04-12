@@ -48,7 +48,8 @@ pub mod eflags {
 }
 
 use bios::ExtendedDisk;
-use fs::{Ext2Error, Ext2FileSystem};
+use e9::write_buffer_as_string;
+use fs::{Ext2Error, Ext2FileSystem, Ext2FileType};
 use gpt::GUIDPartitionTable;
 use mem::{detect_system_memory, get_mem_free, get_mem_total, get_mem_used, Buffer};
 
@@ -168,20 +169,18 @@ pub extern "cdecl" fn rust_entry(bios_idt: usize, boot_drive: usize) -> ! {
         video.write_string(b"Mounted ext2\n");
         show_mem!();
 
-        let mut root_fd = ext2.open(2).unwrap_or_else(|e| e.panic());
-        let mut buffer =
-            Buffer::new(ext2.block_size()).unwrap_or_else(|| Ext2Error::FailedMemAlloc.panic());
-        loop {
-            let read = root_fd
-                .read_block(&mut ext2, &mut buffer)
-                .unwrap_or_else(|e| e.panic());
-            for i in 0..read {
-                printf!(b"%b ", buffer.get(i).unwrap_or(0u8) as u32);
-            }
-            let adv = root_fd.advance();
-            if !adv {
-                break;
-            }
+        let Ext2FileType::Directory(root) = ext2.open(2).unwrap_or_else(|e| e.panic()) else {
+            video.write_string(b"Root is not a directory !\n");
+            kpanic();
+        };
+
+        printf!(b"Root inode: %b\r\n", root.get_inode());
+        printf!(b"Root's parent inode: %b\r\n", root.get_parent_inode());
+        printf!(b"Listing root directory...\r\n");
+        for entry in root.listdir() {
+            printf!(b"  inode 0x%x --> ", entry.get_inode());
+            write_buffer_as_string(entry.get_name());
+            printf!(b"\r\n");
         }
 
         #[allow(clippy::empty_loop)]

@@ -4,7 +4,7 @@ use crate::{
     bios::{DiskError, ExtendedDisk},
     gpt::DiskRange,
     kpanic,
-    mem::{Box, Buffer, Vec},
+    mem::{Box, Buffer, RefIterVec, Vec},
     printf,
     video::Video,
 };
@@ -167,6 +167,8 @@ pub enum Ext2Error {
     BadBlockGroupDescriptorTableEntrySize(usize, usize),
     BadInodeIndex(usize),
     BufferTooSmall(usize, usize),
+    UnsupportedInodeType(u16),
+    DirectoryParseFailed,
     NullBlockSize,
     NullPointer,
     BadSuperblock,
@@ -224,6 +226,14 @@ impl Ext2Error {
                 Ext2Error::DiskError(e) => {
                     video.write_string(b"Ext2 file system error caused by:\n");
                     e.panic();
+                }
+                Ext2Error::UnsupportedInodeType(t) => {
+                    video.write_string(b"Unsupported inode type: 0x");
+                    video.write_hex_u16(*t);
+                    video.write_char(b'\n');
+                }
+                Ext2Error::DirectoryParseFailed => {
+                    video.write_string(b"Failed to parse directory\n");
                 }
             }
         }
@@ -534,6 +544,161 @@ impl CachedInodeReadingLocation {
     }
 }
 
+pub struct Ext2File<'a> {
+    ext2: &'a mut Ext2FileSystem,
+    fd: CachedInodeReadingLocation,
+}
+
+impl<'a> Ext2File<'a> {
+    pub fn new(fd: CachedInodeReadingLocation, ext2: &'a mut Ext2FileSystem) -> Self {
+        Self { fd, ext2 }
+    }
+}
+
+struct Ext2DirectoryEntryrRaw {
+    pub inode: u32,
+    pub entry_size: u16,
+    pub len_lo: u8,
+    pub type_or_len_hi: u8,
+}
+
+pub struct Ext2DirectoryEntry {
+    inode: u32,
+    name: Buffer,
+}
+
+impl Ext2DirectoryEntry {
+    pub fn has_name(&self, name: &[u8]) -> bool {
+        if self.name.len() != name.len() {
+            false
+        } else {
+            for i in 0..self.name.len() {
+                match (self.name.get(i), name.get(i)) {
+                    (Some(a), Some(&b)) => {
+                        if a != b {
+                            return false;
+                        }
+                    }
+                    _ => return false,
+                }
+            }
+            true
+        }
+    }
+
+    pub fn get_name(&self) -> &Buffer {
+        &self.name
+    }
+
+    pub fn get_inode(&self) -> u32 {
+        self.inode
+    }
+}
+
+pub struct Ext2Directory<'a> {
+    ext2: &'a mut Ext2FileSystem,
+    fd: CachedInodeReadingLocation,
+    entries: Vec<Ext2DirectoryEntry>,
+    self_entry: usize,
+    parent_entry: usize,
+}
+
+impl<'a> Ext2Directory<'a> {
+    fn new(
+        fd: CachedInodeReadingLocation,
+        ext2: &'a mut Ext2FileSystem,
+    ) -> Result<Self, Ext2Error> {
+        let mut dir = Ext2Directory {
+            ext2,
+            fd,
+            entries: Vec::default(),
+            self_entry: 0,
+            parent_entry: 0,
+        };
+        // Allocate buffers
+        let mut buffer =
+            Buffer::new(dir.fd.inode.size_lo as usize).ok_or(Ext2Error::FailedMemAlloc)?;
+        let mut block_buffer =
+            Buffer::new(dir.ext2.block_size()).ok_or(Ext2Error::FailedMemAlloc)?;
+
+        // Read content
+        let mut idx = 0;
+        loop {
+            let read = dir.fd.read_block(dir.ext2, &mut block_buffer)?;
+            block_buffer.copy_to(0, &mut buffer, idx, read);
+            idx += read;
+            if !dir.fd.advance() {
+                break;
+            }
+        }
+
+        // Parse directory entries
+        idx = 0;
+        while idx < dir.fd.inode.size_lo as usize {
+            let entry_raw = unsafe {
+                (buffer.get_ptr().add(idx) as *const Ext2DirectoryEntryrRaw).read_unaligned()
+            };
+            let name_entry_len = if (dir.ext2.superblock.required_features
+                & REQUIRED_FEATURE_DIRECTORY_ENTRIES_HAVE_TYPE_FIELD)
+                == REQUIRED_FEATURE_DIRECTORY_ENTRIES_HAVE_TYPE_FIELD
+            {
+                entry_raw.len_lo as usize
+            } else {
+                ((entry_raw.type_or_len_hi as usize) << 8) + (entry_raw.len_lo as usize)
+            };
+
+            let mut entry = Ext2DirectoryEntry {
+                inode: entry_raw.inode,
+                name: Buffer::new(name_entry_len).ok_or(Ext2Error::FailedMemAlloc)?,
+            };
+            if !buffer.copy_to(
+                idx + size_of::<Ext2DirectoryEntryrRaw>(),
+                &mut entry.name,
+                0,
+                name_entry_len,
+            ) {
+                return Err(Ext2Error::DirectoryParseFailed);
+            }
+
+            if entry.has_name(b".") {
+                dir.self_entry = dir.entries.len();
+            }
+            if entry.has_name(b"..") {
+                dir.parent_entry = dir.entries.len();
+            }
+
+            dir.entries.push(entry);
+
+            idx += entry_raw.entry_size as usize;
+        }
+
+        Ok(dir)
+    }
+
+    pub fn get_inode(&self) -> u32 {
+        self.entries
+            .get(self.self_entry)
+            .unwrap_or_else(|| kpanic())
+            .inode
+    }
+
+    pub fn get_parent_inode(&self) -> u32 {
+        self.entries
+            .get(self.parent_entry)
+            .unwrap_or_else(|| kpanic())
+            .inode
+    }
+
+    pub fn listdir(&self) -> RefIterVec<Ext2DirectoryEntry> {
+        self.entries.iter()
+    }
+}
+
+pub enum Ext2FileType<'a> {
+    File(Ext2File<'a>),
+    Directory(Ext2Directory<'a>),
+}
+
 pub struct Ext2FileSystem {
     disk: ExtendedDisk,
     partition: DiskRange,
@@ -747,8 +912,23 @@ impl Ext2FileSystem {
         }
     }
 
-    pub fn open(&mut self, inode: usize) -> Result<CachedInodeReadingLocation, Ext2Error> {
+    fn open_inode(&mut self, inode: usize) -> Result<CachedInodeReadingLocation, Ext2Error> {
         let inode = self.get_inode(inode)?;
         CachedInodeReadingLocation::new(self, inode)
+    }
+
+    pub fn open<'a>(&'a mut self, inode: usize) -> Result<Ext2FileType<'a>, Ext2Error> {
+        let fd = self.open_inode(inode)?;
+        if (fd.inode.type_and_permissions & INODE_TYPE_DIRECTORY) == INODE_TYPE_DIRECTORY {
+            Ok(Ext2FileType::Directory(Ext2Directory::new(fd, self)?))
+        } else if (fd.inode.type_and_permissions & INODE_TYPE_REGULAR_FILE)
+            == INODE_TYPE_REGULAR_FILE
+        {
+            Ok(Ext2FileType::File(Ext2File::new(fd, self)))
+        } else {
+            Err(Ext2Error::UnsupportedInodeType(
+                fd.inode.type_and_permissions,
+            ))
+        }
     }
 }

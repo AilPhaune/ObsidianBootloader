@@ -674,12 +674,17 @@ where
 pub struct Buffer {
     ptr: *mut u8,
     len: usize,
+    owns_data: bool,
 }
 
 impl Buffer {
     pub fn new(len: usize) -> Option<Self> {
         let ptr = mem_alloc(len)?;
-        Some(Self { ptr, len })
+        Some(Self {
+            ptr,
+            len,
+            owns_data: true,
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -728,7 +733,7 @@ impl Buffer {
         }
     }
 
-    pub fn iter<'a>(&'a self) -> IterBuffer<'a> {
+    pub fn iter<'b>(&'b self) -> IterBuffer<'b> {
         IterBuffer { vec: self, idx: 0 }
     }
 
@@ -745,7 +750,9 @@ impl Buffer {
 
 impl Drop for Buffer {
     fn drop(&mut self) {
-        mem_free(self.ptr);
+        if self.owns_data {
+            mem_free(self.ptr);
+        }
     }
 }
 
