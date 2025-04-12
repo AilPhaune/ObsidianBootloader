@@ -49,9 +49,9 @@ pub mod eflags {
 
 use bios::ExtendedDisk;
 use e9::write_buffer_as_string;
-use fs::{Ext2Error, Ext2FileSystem, Ext2FileType};
+use fs::{Ext2FileSystem, Ext2FileType};
 use gpt::GUIDPartitionTable;
-use mem::{detect_system_memory, get_mem_free, get_mem_total, get_mem_used, Buffer};
+use mem::{detect_system_memory, get_mem_free, get_mem_total, get_mem_used};
 
 use crate::video::{Color, Video};
 
@@ -182,6 +182,14 @@ pub extern "cdecl" fn rust_entry(bios_idt: usize, boot_drive: usize) -> ! {
             write_buffer_as_string(entry.get_name());
             printf!(b"\r\n");
         }
+
+        match e9kprint!("{#:x}{#:x}", 0x411111u32, 0x222i32) {
+            Ok(_) => {}
+            Err(_) => {
+                video.write_string(b"e9kprint failed\r\n");
+                kpanic();
+            }
+        };
 
         #[allow(clippy::empty_loop)]
         loop {}

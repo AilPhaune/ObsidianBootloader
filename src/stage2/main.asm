@@ -3,12 +3,12 @@ EXTERN rust_entry
 
 SECTION .text
 
-GLOBAL stage3_entry
-stage3_entry:
+GLOBAL stage2_entry
+stage2_entry:
     call rust_entry
     cli
     hlt
     jmp $
 
 %include "asm/io.asm"
-%include "asm/bios.asm"
+%include "../lib/bios.asm"

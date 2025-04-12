@@ -1,3 +1,8 @@
+[lib]
+name = "stage2"
+edition = "2021"
+crate-type = ["staticlib"]
+
 [package]
 name = "stage2"
 version = "0.1.0"
@@ -5,7 +10,9 @@ authors = ["AilPhaune"]
 edition = "2021"
 build = "build.rs"
 
-[build-dependencies]
+[dependencies]
+kformat_default_nostd = { git = "https://github.com/AilPhaune/kformat_macros.git", package = "kformat_default_nostd" }
+kformat_macros = { git = "https://github.com/AilPhaune/kformat_macros.git", package = "kformat_macros" }
 
 [features]
 default = []
@@ -13,7 +20,6 @@ default = []
 [profile.dev]
 panic = "abort"
 opt-level = 1
-
 debug = true
 debug-assertions = false
 overflow-checks = false
@@ -30,4 +36,4 @@ debug = true
 i686-unknown-none = true
 
 [package.metadata]
-rustflags = ["-C", "link-args=-Tlinker.ld"]
+rustflags = ["-C", "linker-flavor=ld.lld", "-C", "link-args=-Tlinker.ld"]

@@ -22,8 +22,12 @@ def all_of(list_patterns: list[str]):
     return result
 
 env.Command('build/boot.bin', glob('src/boot/**/*.asm', recursive=True), 'nasm -f bin src/boot/boot.asm -o $TARGET')
-env.Command('build/stage1.bin', glob('src/stage1/**/*.asm', recursive=True), 'nasm -f bin src/stage1/stage1.asm -o $TARGET')
-env.Command('build/bootloader_stage2.bin', all_of(['src/stage2/**/*']), [
+env.Command('build/stage1_raw.o', all_of(['src/stage1/**/*.asm', 'src/lib/**/*.asm']), 'nasm -f elf32 -F dwarf -g -o $TARGET src/stage1/stage1.asm')
+env.Command('build/stage1.o', 'build/stage1_raw.o', 'ld.lld -T src/stage1/linker.ld $SOURCE -o $TARGET')
+env.Command('build/stage1.debug', 'build/stage1.o', 'objcopy --only-keep-debug $SOURCE $TARGET')
+env.Command('build/stage1.bin', 'build/stage1.o', 'objcopy -O binary $SOURCE $TARGET')
+
+env.Command('build/bootloader_stage2.bin', all_of(['src/stage2/**/*', 'src/lib/**/*.asm']), [
     f'/usr/bin/sh -c "cd src/stage2 && make MODE={mode}"'
 ])
 

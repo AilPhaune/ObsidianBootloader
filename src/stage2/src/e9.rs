@@ -1,3 +1,5 @@
+use kformat_default_nostd::Writeable;
+
 use crate::{
     io::{inb, outb},
     mem::Buffer,
@@ -50,6 +52,25 @@ pub fn write_buffer_slice_as_string(buffer: &Buffer, start: usize, end: usize) {
 
 pub fn write_buffer_as_string(buffer: &Buffer) {
     write_buffer_slice_as_string(buffer, 0, buffer.len());
+}
+
+pub struct E9 {}
+
+impl Writeable for E9 {
+    fn write(&mut self, data: char) -> Result<(), usize> {
+        write_char(data as u8);
+        Ok(())
+    }
+}
+
+#[macro_export]
+macro_rules! e9kprint {
+    ($fmt: literal, $($args:expr),*) => {{
+        use $crate::e9::E9;
+        use kformat_default_nostd::kwrite;
+        let mut e9 = E9 {};
+        kwrite!(e9, $fmt, $($args),*)
+    }};
 }
 
 #[macro_export]
