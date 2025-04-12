@@ -168,11 +168,13 @@ pub enum Ext2Error {
     BadInodeIndex(usize),
     BufferTooSmall(usize, usize),
     UnsupportedInodeType(u16),
+    InvalidArgument,
     DirectoryParseFailed,
     NullBlockSize,
     NullPointer,
     BadSuperblock,
     FailedMemAlloc,
+    BufferCopyError,
 }
 
 impl Ext2Error {
@@ -234,6 +236,12 @@ impl Ext2Error {
                 }
                 Ext2Error::DirectoryParseFailed => {
                     video.write_string(b"Failed to parse directory\n");
+                }
+                Ext2Error::InvalidArgument => {
+                    video.write_string(b"Invalid argument\n");
+                }
+                Ext2Error::BufferCopyError => {
+                    video.write_string(b"Buffer copy error\n");
                 }
             }
         }
@@ -547,11 +555,109 @@ impl CachedInodeReadingLocation {
 pub struct Ext2File<'a> {
     ext2: &'a mut Ext2FileSystem,
     fd: CachedInodeReadingLocation,
+    block_buffer: Buffer,
+    cached_buffer_block: usize,
+    cached_buffer_size: usize,
+    curr_offset: usize,
 }
 
 impl<'a> Ext2File<'a> {
-    pub fn new(fd: CachedInodeReadingLocation, ext2: &'a mut Ext2FileSystem) -> Self {
-        Self { fd, ext2 }
+    fn new(
+        fd: CachedInodeReadingLocation,
+        ext2: &'a mut Ext2FileSystem,
+    ) -> Result<Self, Ext2Error> {
+        let bs = ext2.block_size();
+        let mut value = Self {
+            fd,
+            ext2,
+            block_buffer: Buffer::new(bs).ok_or(Ext2Error::FailedMemAlloc)?,
+            cached_buffer_block: 0,
+            cached_buffer_size: 0,
+            curr_offset: 0,
+        };
+        value.internal_update_buffer()?;
+        Ok(value)
+    }
+
+    fn internal_update_buffer(&mut self) -> Result<(), Ext2Error> {
+        self.cached_buffer_size = self.fd.read_block(self.ext2, &mut self.block_buffer)?;
+        Ok(())
+    }
+
+    pub fn seek(&mut self, offset: usize) -> Result<(), Ext2Error> {
+        if offset >= self.fd.inode.size_lo as usize {
+            return Err(Ext2Error::InvalidArgument);
+        }
+        let bs = self.ext2.block_size();
+        if bs == 0 {
+            return Err(Ext2Error::NullBlockSize);
+        }
+        self.curr_offset = offset;
+        self.seek(offset / bs)?;
+        self.internal_update_buffer()?;
+        Ok(())
+    }
+
+    pub fn read(
+        &mut self,
+        buffer: &mut Buffer,
+        buffer_offset: usize,
+        max_count: usize,
+    ) -> Result<usize, Ext2Error> {
+        if buffer_offset > buffer.len()
+            || max_count > buffer.len()
+            || buffer_offset + max_count > buffer.len()
+        {
+            return Err(Ext2Error::BufferTooSmall(
+                buffer_offset + max_count,
+                buffer.len(),
+            ));
+        }
+        let bs = self.ext2.block_size();
+        if bs == 0 {
+            return Err(Ext2Error::NullBlockSize);
+        }
+        let current_block = self.curr_offset / bs;
+        let mut read = 0;
+        if current_block == self.cached_buffer_block {
+            let curr_off = self.curr_offset % bs;
+            let block_rem = bs - curr_off;
+            let to_copy = max_count.min(block_rem);
+            if !self
+                .block_buffer
+                .copy_to(curr_off, buffer, buffer_offset, to_copy)
+            {
+                return Err(Ext2Error::BufferCopyError);
+            }
+            read = to_copy;
+            self.curr_offset += to_copy;
+        }
+
+        while read < max_count {
+            if !self.fd.advance() {
+                break;
+            }
+            self.internal_update_buffer()?;
+
+            let rem_copy = (max_count - read).min(self.cached_buffer_size);
+            if !self
+                .block_buffer
+                .copy_to(0, buffer, buffer_offset + read, rem_copy)
+            {
+                return Err(Ext2Error::BufferCopyError);
+            }
+            read += rem_copy;
+            self.curr_offset += rem_copy;
+        }
+
+        Ok(read)
+    }
+
+    pub fn read_all(&mut self) -> Result<Buffer, Ext2Error> {
+        let len = self.fd.inode.size_lo as usize;
+        let mut buffer = Buffer::new(len).ok_or(Ext2Error::FailedMemAlloc)?;
+        self.read(&mut buffer, 0, len)?;
+        Ok(buffer)
     }
 }
 
@@ -876,7 +982,6 @@ impl Ext2FileSystem {
 
         let inode_size = self.inode_size();
         if inode_size == 0 {
-            printf!(b"NULL INODE SIZE ??\r\n");
             return Err(Ext2Error::NullBlockSize);
         }
 
@@ -885,13 +990,18 @@ impl Ext2FileSystem {
             .get(group)
             .ok_or(Ext2Error::BadSuperblock)?
             .inode_table_block as u64;
+        let inodes_per_block = block_size / inode_size;
+        if inodes_per_block == 0 {
+            return Err(Ext2Error::BadSuperblock);
+        }
+        let block_offset = (index / inodes_per_block) as u64;
 
-        let offset = index * inode_size;
-        let mut block_buffer = Buffer::new(self.block_size()).ok_or(Ext2Error::FailedMemAlloc)?;
+        let offset = (index % inodes_per_block) * inode_size;
+        let mut block_buffer = Buffer::new(block_size).ok_or(Ext2Error::FailedMemAlloc)?;
         let mut buffer = Buffer::new(inode_size).ok_or(Ext2Error::FailedMemAlloc)?;
 
         unsafe {
-            self.read_block(block, &mut block_buffer)?;
+            self.read_block(block + block_offset, &mut block_buffer)?;
             if !block_buffer.copy_to(offset, &mut buffer, 0, inode_size) {
                 printf!(
                     b"\r\n\r\nWHAT THE FUCK ???\r\nblock_buffer %x (len %x) | buffer %x (len %x)\r\nTried copy: source offset %x | dest offset %x | amount %x\r\n",
@@ -924,7 +1034,7 @@ impl Ext2FileSystem {
         } else if (fd.inode.type_and_permissions & INODE_TYPE_REGULAR_FILE)
             == INODE_TYPE_REGULAR_FILE
         {
-            Ok(Ext2FileType::File(Ext2File::new(fd, self)))
+            Ok(Ext2FileType::File(Ext2File::new(fd, self)?))
         } else {
             Err(Ext2Error::UnsupportedInodeType(
                 fd.inode.type_and_permissions,

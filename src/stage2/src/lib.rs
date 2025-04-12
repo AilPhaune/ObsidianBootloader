@@ -174,12 +174,29 @@ pub extern "cdecl" fn rust_entry(bios_idt: usize, boot_drive: usize) -> ! {
             kpanic();
         };
 
-        printf!(b"Root inode: %b\r\n", root.get_inode());
-        printf!(b"Root's parent inode: %b\r\n", root.get_parent_inode());
-        printf!(b"Listing root directory...\r\n");
+        let mut hellotxt = None;
+
         for entry in root.listdir() {
-            printf!(b"  inode 0x%x --> ", entry.get_inode());
-            write_buffer_as_string(entry.get_name());
+            if entry.has_name(b"hello.txt") {
+                hellotxt = Some(entry.get_inode());
+                break;
+            }
+        }
+
+        if let Some(inode) = hellotxt {
+            let mut file = match ext2.open(inode as usize) {
+                Ok(Ext2FileType::File(file)) => file,
+                Err(e) => e.panic(),
+                _ => {
+                    video.write_string(b"/hello.txt is not a file !\n");
+                    kpanic()
+                }
+            };
+
+            let contents = file.read_all().unwrap_or_else(|e| e.panic());
+
+            printf!(b"/hello.txt contents:\r\n");
+            write_buffer_as_string(&contents);
             printf!(b"\r\n");
         }
 
