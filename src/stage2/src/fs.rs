@@ -301,6 +301,28 @@ impl InodeReadingLocation {
         })
     }
 
+    pub fn current_idx(&self) -> usize {
+        if let InodeReadingLocationInfo::Direct(direct) = self.location {
+            return direct;
+        }
+        let mut idx = 12;
+        if let InodeReadingLocationInfo::Single(single) = self.location {
+            return idx + single;
+        }
+        idx += self.table_size;
+        if let InodeReadingLocationInfo::Double(double1, double2) = self.location {
+            return idx + double1 * self.table_size + double2;
+        }
+        idx += self.table_size * self.table_size;
+        if let InodeReadingLocationInfo::Triple(triple1, triple2, triple3) = self.location {
+            return idx
+                + triple1 * self.table_size * self.table_size
+                + triple2 * self.table_size
+                + triple3;
+        }
+        unreachable!();
+    }
+
     pub fn advance(&mut self) -> bool {
         match self.location {
             InodeReadingLocationInfo::Direct(direct) => {
@@ -372,7 +394,7 @@ impl CachedInodeReadingLocation {
         let table2 = Buffer::new(size).ok_or(Ext2Error::FailedMemAlloc)?;
         let table3 = Buffer::new(size).ok_or(Ext2Error::FailedMemAlloc)?;
 
-        let max_block = ((inode.size_lo as usize) / size) - 1;
+        let max_block = (inode.size_lo as usize) / size;
 
         Ok(Self {
             location,
@@ -528,8 +550,9 @@ impl CachedInodeReadingLocation {
             return Err(Ext2Error::BufferTooSmall(buffer.len(), bs));
         }
         let block = self.get_next_block()?;
+        let block_idx = self.location.current_idx();
         ext2.read_block(block as u64, buffer)?;
-        if block < self.max_block {
+        if block_idx < self.max_block {
             Ok(bs)
         } else {
             let read = (self.inode.size_lo as usize) % bs;
@@ -538,16 +561,11 @@ impl CachedInodeReadingLocation {
     }
 
     pub fn advance(&mut self) -> bool {
-        match self.get_next_block() {
-            Ok(block) => {
-                if block >= self.max_block {
-                    false
-                } else {
-                    self.location.advance();
-                    true
-                }
-            }
-            Err(_) => false,
+        let block = self.location.current_idx();
+        if block >= self.max_block {
+            false
+        } else {
+            self.location.advance()
         }
     }
 }
@@ -593,25 +611,14 @@ impl<'a> Ext2File<'a> {
             return Err(Ext2Error::NullBlockSize);
         }
         self.curr_offset = offset;
-        self.seek(offset / bs)?;
+        self.fd.seek(self.ext2, offset / bs)?;
         self.internal_update_buffer()?;
         Ok(())
     }
 
-    pub fn read(
-        &mut self,
-        buffer: &mut Buffer,
-        buffer_offset: usize,
-        max_count: usize,
-    ) -> Result<usize, Ext2Error> {
-        if buffer_offset > buffer.len()
-            || max_count > buffer.len()
-            || buffer_offset + max_count > buffer.len()
-        {
-            return Err(Ext2Error::BufferTooSmall(
-                buffer_offset + max_count,
-                buffer.len(),
-            ));
+    pub fn read(&mut self, buffer: &mut Buffer, max_count: usize) -> Result<usize, Ext2Error> {
+        if max_count > buffer.len() {
+            return Err(Ext2Error::BufferTooSmall(max_count, buffer.len()));
         }
         let bs = self.ext2.block_size();
         if bs == 0 {
@@ -623,12 +630,13 @@ impl<'a> Ext2File<'a> {
             let curr_off = self.curr_offset % bs;
             let block_rem = bs - curr_off;
             let to_copy = max_count.min(block_rem);
-            if !self
-                .block_buffer
-                .copy_to(curr_off, buffer, buffer_offset, to_copy)
-            {
+            if !self.block_buffer.copy_to(curr_off, buffer, 0, to_copy) {
                 return Err(Ext2Error::BufferCopyError);
             }
+            printf!(
+                b"Copied 0x%x bytes from initially cached buffer\r\n",
+                to_copy
+            );
             read = to_copy;
             self.curr_offset += to_copy;
         }
@@ -640,12 +648,10 @@ impl<'a> Ext2File<'a> {
             self.internal_update_buffer()?;
 
             let rem_copy = (max_count - read).min(self.cached_buffer_size);
-            if !self
-                .block_buffer
-                .copy_to(0, buffer, buffer_offset + read, rem_copy)
-            {
+            if !self.block_buffer.copy_to(0, buffer, read, rem_copy) {
                 return Err(Ext2Error::BufferCopyError);
             }
+            printf!(b"Copied 0x%x bytes\r\n", rem_copy);
             read += rem_copy;
             self.curr_offset += rem_copy;
         }
@@ -656,8 +662,12 @@ impl<'a> Ext2File<'a> {
     pub fn read_all(&mut self) -> Result<Buffer, Ext2Error> {
         let len = self.fd.inode.size_lo as usize;
         let mut buffer = Buffer::new(len).ok_or(Ext2Error::FailedMemAlloc)?;
-        self.read(&mut buffer, 0, len)?;
+        self.read(&mut buffer, len)?;
         Ok(buffer)
+    }
+
+    pub fn get_size(&self) -> usize {
+        self.fd.inode.size_lo as usize
     }
 }
 

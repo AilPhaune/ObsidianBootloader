@@ -178,6 +178,7 @@ pub extern "cdecl" fn rust_entry(bios_idt: usize, boot_drive: usize) -> ! {
 
         for entry in root.listdir() {
             if entry.has_name(b"hello.txt") {
+                printf!(b"Found /hello.txt\r\n");
                 hellotxt = Some(entry.get_inode());
                 break;
             }
@@ -195,9 +196,8 @@ pub extern "cdecl" fn rust_entry(bios_idt: usize, boot_drive: usize) -> ! {
 
             let contents = file.read_all().unwrap_or_else(|e| e.panic());
 
-            printf!(b"/hello.txt contents:\r\n");
+            printf!(b"/hello.txt (size = 0x%x), contents:\r\n", file.get_size());
             write_buffer_as_string(&contents);
-            printf!(b"\r\n");
         }
 
         #[allow(clippy::empty_loop)]
