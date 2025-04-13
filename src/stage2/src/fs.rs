@@ -560,13 +560,15 @@ impl CachedInodeReadingLocation {
         }
     }
 
-    pub fn advance(&mut self) -> bool {
+    pub fn advance(&mut self, ext2: &mut Ext2FileSystem) -> Result<bool, Ext2Error> {
         let block = self.location.current_idx();
-        if block >= self.max_block {
-            false
-        } else {
-            self.location.advance()
+        if block >= self.max_block || !self.location.advance() {
+            return Ok(false);
         }
+        self.check_table1(ext2)?;
+        self.check_table2(ext2)?;
+        self.check_table3(ext2)?;
+        Ok(true)
     }
 }
 
@@ -633,16 +635,12 @@ impl<'a> Ext2File<'a> {
             if !self.block_buffer.copy_to(curr_off, buffer, 0, to_copy) {
                 return Err(Ext2Error::BufferCopyError);
             }
-            printf!(
-                b"Copied 0x%x bytes from initially cached buffer\r\n",
-                to_copy
-            );
             read = to_copy;
             self.curr_offset += to_copy;
         }
 
         while read < max_count {
-            if !self.fd.advance() {
+            if !self.fd.advance(self.ext2)? {
                 break;
             }
             self.internal_update_buffer()?;
@@ -651,7 +649,6 @@ impl<'a> Ext2File<'a> {
             if !self.block_buffer.copy_to(0, buffer, read, rem_copy) {
                 return Err(Ext2Error::BufferCopyError);
             }
-            printf!(b"Copied 0x%x bytes\r\n", rem_copy);
             read += rem_copy;
             self.curr_offset += rem_copy;
         }
@@ -743,7 +740,7 @@ impl<'a> Ext2Directory<'a> {
             let read = dir.fd.read_block(dir.ext2, &mut block_buffer)?;
             block_buffer.copy_to(0, &mut buffer, idx, read);
             idx += read;
-            if !dir.fd.advance() {
+            if !dir.fd.advance(dir.ext2)? {
                 break;
             }
         }
@@ -889,7 +886,7 @@ impl Ext2FileSystem {
         let mut block_buffer = Buffer::new(bs).ok_or(Ext2Error::FailedMemAlloc)?;
 
         let mut read = 0;
-        let mut disk_byte = 2048;
+        let mut disk_byte = if bs == 1024 { 2048 } else { bs };
 
         while read < table_size {
             let disk_block = disk_byte / bs;
@@ -1013,17 +1010,6 @@ impl Ext2FileSystem {
         unsafe {
             self.read_block(block + block_offset, &mut block_buffer)?;
             if !block_buffer.copy_to(offset, &mut buffer, 0, inode_size) {
-                printf!(
-                    b"\r\n\r\nWHAT THE FUCK ???\r\nblock_buffer %x (len %x) | buffer %x (len %x)\r\nTried copy: source offset %x | dest offset %x | amount %x\r\n",
-                    block_buffer.get_ptr() as u32,
-                    block_buffer.len() as u32,
-                    buffer.get_ptr() as u32,
-                    buffer.len() as u32,
-                    offset as u32,
-                    0,
-                    inode_size as u32
-                );
-
                 kpanic();
             }
 

@@ -115,6 +115,15 @@ pub fn kpanic() -> ! {
     loop {}
 }
 
+pub fn fnv1a64(data: &Buffer) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in data.iter() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
 #[no_mangle]
 pub extern "cdecl" fn rust_entry(bios_idt: usize, boot_drive: usize) -> ! {
     unsafe {
@@ -175,13 +184,40 @@ pub extern "cdecl" fn rust_entry(bios_idt: usize, boot_drive: usize) -> ! {
         };
 
         let mut hellotxt = None;
+        let mut randombin = None;
 
         for entry in root.listdir() {
             if entry.has_name(b"hello.txt") {
                 printf!(b"Found /hello.txt\r\n");
                 hellotxt = Some(entry.get_inode());
-                break;
             }
+
+            if entry.has_name(b"random.bin") {
+                printf!(b"Found /random.bin\r\n");
+                randombin = Some(entry.get_inode());
+            }
+        }
+
+        if let Some(inode) = randombin {
+            let mut file = match ext2.open(inode as usize) {
+                Ok(Ext2FileType::File(file)) => file,
+                Err(e) => e.panic(),
+                _ => {
+                    video.write_string(b"/random.bin is not a file !\n");
+                    kpanic()
+                }
+            };
+
+            let contents = file.read_all().unwrap_or_else(|e| e.panic());
+            printf!(b"Fetched /random.bin contents\r\n");
+            let hash = fnv1a64(&contents);
+
+            printf!(
+                b"/random.bin (size = 0x%x), contents hash: %x%x\r\n",
+                file.get_size() as u32,
+                (hash >> 32) as u32,
+                hash as u32
+            );
         }
 
         if let Some(inode) = hellotxt {

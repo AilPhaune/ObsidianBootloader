@@ -11,6 +11,21 @@ sudo mount ${loop_device}p1 disk_mnt
 
 echo "Hello World" > disk_mnt/hello.txt
 
+dd if=/dev/urandom of=disk_mnt/random.bin bs=1M count=4
+
+hash=$(python3 -c '
+import sys
+data = open("disk_mnt/random.bin", "rb").read()
+hash = 0xcbf29ce484222325
+for b in data:
+    hash ^= b
+    hash = (hash * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF
+print(hex(hash)[2:])
+')
+
+echo "FNV-1a hash: $hash"
+echo "FNV-1a hash: $hash" >> disk_mnt/hello.txt
+
 sudo umount disk_mnt
 rmdir disk_mnt
 sudo losetup -d ${loop_device}

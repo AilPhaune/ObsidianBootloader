@@ -5,7 +5,7 @@ use core::{
 
 use crate::{
     bios::{unsafe_call_bios_interrupt, BiosInterruptResult},
-    eflags, kpanic, printf, ptr_to_seg_off,
+    eflags, kpanic, ptr_to_seg_off,
     video::Video,
 };
 
@@ -264,7 +264,7 @@ fn mem_alloc<T>(size: usize) -> Option<*mut T> {
             let header_end = (header as usize) + header_v.size;
             let desired_end = (header as usize) + size;
             let mut next_header = (desired_end & !(0x1000 - 1)) + 0x1000 - header_size;
-            while next_header < desired_end {
+            while next_header <= desired_end {
                 next_header += 0x1000;
             }
             // Have a valid header address now
@@ -453,7 +453,6 @@ where
 {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
-            printf!(b"DROPPED BOX %x\r\n", self.ptr as u32);
             mem_free(self.ptr);
         }
     }

@@ -28,7 +28,7 @@ env.Command('build/bootloader_stage2.bin', all_of(['src/stage2/**/*']), [
 ])
 
 env.Command('build/disk.img', ['build/boot.bin', 'build/stage1.bin', 'build/bootloader_stage2.bin'], [
-    f'dd if=/dev/zero of=build/disk.img count=${size} bs=1M',
+    f'dd if=/dev/zero of=build/disk.img count={size} bs=1M',
     'sfdisk build/disk.img < sfdisk_parts_ext2',
     'dd if=build/boot.bin of=build/disk.img bs=446 count=1 conv=notrunc',
     'dd if=build/stage1.bin of=build/disk.img bs=512 oseek=34 conv=notrunc',

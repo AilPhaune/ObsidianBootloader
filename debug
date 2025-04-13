@@ -1,4 +1,4 @@
 #!/usr/bin/sh
 
 echo "Starting QEMU (gdb)"
-qemu-system-i386 -m 128 -s -S -drive file=build/disk.img,index=0,media=disk,format=raw
+qemu-system-i386 -m 2048 -s -S -drive file=build/disk.img,index=0,media=disk,format=raw

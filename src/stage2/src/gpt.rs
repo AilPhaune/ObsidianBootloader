@@ -220,13 +220,14 @@ impl GUIDPartitionTable {
             let (entry, name) = unsafe {
                 let addr = buffer.get_ptr().add(1024 + entry_size * i);
                 let entry = (addr as *const GUIDPartitionTableEntryRaw).read_unaligned();
+
+                if entry.type_guid == [0; 16] {
+                    continue;
+                }
+
                 let name = Buffer::new(name_size).ok_or(GPTError::FailedMemAlloc)?;
                 (entry, name)
             };
-
-            if entry.type_guid == [0; 16] {
-                continue;
-            }
 
             let part = GUIDPartitionTableEntry {
                 type_guid: entry.type_guid,
