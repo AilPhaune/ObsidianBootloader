@@ -11,7 +11,7 @@ use crate::{
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
-struct SystemMemoryMap {
+pub struct SystemMemoryMap {
     base_addr_lo: u32,
     base_addr_hi: u32,
     len_lo: u32,
@@ -23,8 +23,22 @@ impl SystemMemoryMap {
     pub fn base_addr(&self) -> u64 {
         (self.base_addr_hi as u64) << 32 | self.base_addr_lo as u64
     }
+
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> u64 {
         (self.len_hi as u64) << 32 | self.len_lo as u64
+    }
+
+    pub fn is_null(&self) -> bool {
+        self.base_addr_lo == 0
+            && self.base_addr_hi == 0
+            && self.len_lo == 0
+            && self.len_hi == 0
+            && self.range_type == 0
+    }
+
+    pub fn range_type(&self) -> u32 {
+        self.range_type
     }
 }
 
@@ -33,14 +47,14 @@ pub const RANGE_TYPE_RESERVED: u32 = 0x2;
 pub const RANGE_TYPE_ACPI_RECLAIM: u32 = 0x3;
 pub const RANGE_TYPE_ACPI_NVS: u32 = 0x4;
 
-static mut SYSTEM_MEMORY_MAP: [SystemMemoryMap; 64] = [SystemMemoryMap {
+pub static mut SYSTEM_MEMORY_MAP: [SystemMemoryMap; 64] = [SystemMemoryMap {
     base_addr_lo: 0,
     base_addr_hi: 0,
     len_lo: 0,
     len_hi: 0,
     range_type: 0,
 }; 64];
-static mut USED_MAP: usize = 0;
+pub static mut USED_MAP: usize = 0;
 
 const SMAP: usize = 0x534D4150;
 
@@ -204,6 +218,33 @@ pub unsafe fn memcmp(a: usize, b: usize, count: usize) -> isize {
         q = q.add(1);
         c -= 1;
     }
+}
+
+#[no_mangle]
+#[inline(never)]
+/// # Safety
+/// Copies `n` bytes from `src` to `dest`
+pub unsafe fn memmove(dest: usize, src: usize, n: usize) -> usize {
+    if dest == src || n == 0 {
+        return dest;
+    }
+
+    let dest = dest as *mut u8;
+    let src = src as *const u8;
+
+    if dest as usize > src as usize {
+        // Copy backwards to handle overlap
+        for i in (0..n).rev() {
+            *dest.add(i) = *src.add(i);
+        }
+    } else {
+        // Copy forwards
+        for i in 0..n {
+            *dest.add(i) = *src.add(i);
+        }
+    }
+
+    dest as usize
 }
 
 /// # Safety
@@ -436,6 +477,14 @@ where
         }
         Self { ptr }
     }
+
+    /// # Safety
+    /// Creates a null pointer
+    pub const unsafe fn null_const() -> Self {
+        Self {
+            ptr: ptr::null_mut(),
+        }
+    }
 }
 
 impl<T> Box<T>
@@ -601,6 +650,55 @@ where
 
     pub fn iter<'a>(&'a self) -> RefIterVec<'a, T> {
         RefIterVec { vec: self, idx: 0 }
+    }
+
+    pub fn swap(&mut self, a: usize, b: usize) {
+        unsafe {
+            let ptr_a = self.get_ptr_for_idx(a);
+            let ptr_b = self.get_ptr_for_idx(b);
+            ptr::swap(ptr_a, ptr_b);
+        }
+    }
+
+    pub fn bubble_sort(&mut self, cmp: impl Fn(&T, &T) -> isize) {
+        for i in 0..self.len {
+            for j in 0..self.len - i - 1 {
+                let a = self.get(j).unwrap_or_else(|| kpanic());
+                let b = self.get(j + 1).unwrap_or_else(|| kpanic());
+                if cmp(a, b) > 0 {
+                    self.swap(j, j + 1);
+                }
+            }
+        }
+    }
+
+    pub fn insert(&mut self, index: usize, value: T) -> bool {
+        if index > self.len {
+            false
+        } else if index == self.len {
+            self.push(value);
+            true
+        } else {
+            self.grow(self.len + 1);
+
+            // Shift elements to the right
+            for i in (index..self.len).rev() {
+                unsafe {
+                    ptr::copy_nonoverlapping(
+                        self.get_ptr_for_idx(i),
+                        self.get_ptr_for_idx(i + 1),
+                        1,
+                    );
+                }
+            }
+
+            unsafe {
+                *self.get_ptr_for_idx(index) = value;
+            }
+            self.len += 1;
+
+            true
+        }
     }
 }
 

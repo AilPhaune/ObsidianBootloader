@@ -5,7 +5,6 @@ use crate::{
     gpt::DiskRange,
     kpanic,
     mem::{Box, Buffer, RefIterVec, Vec},
-    printf,
     video::Video,
 };
 

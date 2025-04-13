@@ -6,9 +6,11 @@
 pub mod bios;
 pub mod e9;
 pub mod fs;
+pub mod gdt;
 pub mod gpt;
 pub mod io;
 pub mod mem;
+pub mod paging;
 pub mod video;
 
 pub mod eflags {
@@ -49,9 +51,11 @@ pub mod eflags {
 
 use bios::ExtendedDisk;
 use e9::write_buffer_as_string;
-use fs::{Ext2Error, Ext2FileSystem, Ext2FileType};
+use fs::{Ext2FileSystem, Ext2FileType};
+use gdt::{is_cpuid_supported, is_long_mode_supported};
 use gpt::GUIDPartitionTable;
 use mem::{detect_system_memory, get_mem_free, get_mem_total, get_mem_used, Buffer};
+use paging::enable_paging;
 
 use crate::video::{Color, Video};
 
@@ -141,6 +145,11 @@ pub extern "cdecl" fn rust_entry(bios_idt: usize, boot_drive: usize) -> ! {
         video.write_hex_u8(boot_drive as u8);
         video.write_char(b'\n');
 
+        if !is_cpuid_supported() {
+            video.write_string(b"Failed to boot: CPUID not supported !\n");
+            kpanic();
+        }
+
         let mut extended_disk = ExtendedDisk::new(boot_drive as u8, bios_idt);
         if !extended_disk.check_present() {
             kpanic();
@@ -183,58 +192,18 @@ pub extern "cdecl" fn rust_entry(bios_idt: usize, boot_drive: usize) -> ! {
             kpanic();
         };
 
-        let mut hellotxt = None;
-        let mut randombin = None;
-
         for entry in root.listdir() {
-            if entry.has_name(b"hello.txt") {
-                printf!(b"Found /hello.txt\r\n");
-                hellotxt = Some(entry.get_inode());
-            }
-
-            if entry.has_name(b"random.bin") {
-                printf!(b"Found /random.bin\r\n");
-                randombin = Some(entry.get_inode());
-            }
+            printf!(b"/");
+            write_buffer_as_string(entry.get_name());
+            printf!(b"\r\n");
         }
 
-        if let Some(inode) = randombin {
-            let mut file = match ext2.open(inode as usize) {
-                Ok(Ext2FileType::File(file)) => file,
-                Err(e) => e.panic(),
-                _ => {
-                    video.write_string(b"/random.bin is not a file !\n");
-                    kpanic()
-                }
-            };
-
-            let contents = file.read_all().unwrap_or_else(|e| e.panic());
-            printf!(b"Fetched /random.bin contents\r\n");
-            let hash = fnv1a64(&contents);
-
-            printf!(
-                b"/random.bin (size = 0x%x), contents hash: %x%x\r\n",
-                file.get_size() as u32,
-                (hash >> 32) as u32,
-                hash as u32
-            );
+        if !is_long_mode_supported() {
+            video.write_string(b"Failed to boot: Long mode not supported !\n");
+            kpanic();
         }
 
-        if let Some(inode) = hellotxt {
-            let mut file = match ext2.open(inode as usize) {
-                Ok(Ext2FileType::File(file)) => file,
-                Err(e) => e.panic(),
-                _ => {
-                    video.write_string(b"/hello.txt is not a file !\n");
-                    kpanic()
-                }
-            };
-
-            let contents = file.read_all().unwrap_or_else(|e| e.panic());
-
-            printf!(b"/hello.txt (size = 0x%x), contents:\r\n", file.get_size());
-            write_buffer_as_string(&contents);
-        }
+        enable_paging();
 
         #[allow(clippy::empty_loop)]
         loop {}
