@@ -2,7 +2,9 @@
 #![no_main]
 #![feature(sync_unsafe_cell)]
 #![feature(optimize_attribute)]
+#![feature(naked_functions)]
 
+pub mod arith;
 pub mod bios;
 pub mod e9;
 pub mod fs;
@@ -50,10 +52,10 @@ pub mod eflags {
 }
 
 use bios::ExtendedDisk;
-use e9::write_buffer_as_string;
+use e9::{write_buffer_as_string, write_guid, write_u64_decimal};
 use fs::{Ext2FileSystem, Ext2FileType};
 use gdt::{is_cpuid_supported, is_long_mode_supported};
-use gpt::GUIDPartitionTable;
+use gpt::{GUIDPartitionTable, PARTITION_GUID_TYPE_LINUX_FS};
 use mem::{detect_system_memory, get_mem_free, get_mem_total, get_mem_used, Buffer};
 use paging::enable_paging;
 
@@ -140,24 +142,32 @@ pub extern "cdecl" fn rust_entry(bios_idt: usize, boot_drive: usize) -> ! {
         video.write_hex_u8((bios_idt >> 8) as u8);
         video.write_hex_u8(bios_idt as u8);
         video.write_char(b'\n');
+        printf!(b"Bios IDT located at: 0x%x\r\n", bios_idt);
 
         video.write_string(b"Booting from drive 0x");
         video.write_hex_u8(boot_drive as u8);
         video.write_char(b'\n');
+        printf!(b"Booting from BIOS drive #%bh\r\n", boot_drive);
 
         if !is_cpuid_supported() {
             video.write_string(b"Failed to boot: CPUID not supported !\n");
             kpanic();
         }
+        printf!(b"CPU supports cpuid\r\n");
 
         let mut extended_disk = ExtendedDisk::new(boot_drive as u8, bios_idt);
         if !extended_disk.check_present() {
             kpanic();
         }
+        printf!(b"Extended BIOS disk functions present\r\n");
+        let disk_params = extended_disk.get_params().unwrap_or_else(|e| e.panic());
 
         match detect_system_memory(bios_idt) {
-            Ok(_) => {}
+            Ok(_) => {
+                printf!(b"Successfully detected system memory from BIOS\r\n");
+            }
             Err(e) => {
+                printf!(b"Failed to detect system memory from BIOS: 0x%b\r\n", e);
                 video.write_string(b"Memory detection failed: 0x");
                 video.write_hex_u8(e);
                 video.write_char(b'\n');
@@ -178,34 +188,108 @@ pub extern "cdecl" fn rust_entry(bios_idt: usize, boot_drive: usize) -> ! {
         }
 
         let gpt = GUIDPartitionTable::read(&mut extended_disk).unwrap_or_else(|e| e.panic());
-        let Some(part0) = gpt.get_partitions().get(0) else {
-            video.write_string(b"No partitions !\n");
-            kpanic();
+        printf!(b"\r\nFound GUID Partition Table on boot drive\r\nList partitions:\r\n");
+        for partition in gpt.get_partitions().iter() {
+            if partition.name.is_empty() || !partition.name.iter().any(|c| c != 0) {
+                printf!(b"> NO NAME");
+            } else {
+                printf!(b"> \"");
+                write_buffer_as_string(&partition.name);
+                printf!(b"\"");
+            }
+            printf!(
+                b"\r\n|--- Begin LBA: HEX %x%x / DEC ",
+                (partition.first_lba >> 32) as u32,
+                partition.first_lba as u32
+            );
+            write_u64_decimal(partition.first_lba);
+            printf!(
+                b"\r\n|--- End LBA: HEX %x%x / DEC ",
+                (partition.last_lba >> 32) as u32,
+                partition.last_lba as u32
+            );
+            write_u64_decimal(partition.last_lba);
+            printf!(b"\r\n|--- Size: ");
+            let size = partition.last_lba - partition.first_lba + 1;
+            write_u64_decimal(size);
+            printf!(b" sectors => ");
+            write_u64_decimal(size * (disk_params.bytes_per_sector as u64));
+            printf!(b" bytes\r\n|--- Type: ");
+            write_guid(partition.type_guid);
+            printf!(b"\r\n|--- Unique id: ");
+            write_guid(partition.unique_guid);
+            printf!(
+                b"\r\n+--- Flags: %x %x\r\n",
+                (partition.flags >> 32) as u32,
+                partition.flags as u32
+            );
+        }
+        printf!(b"\n");
+
+        let (part_i, mut ext2) = {
+            let mut part = None;
+            for (i, partition) in gpt.get_partitions().iter().enumerate() {
+                if partition.type_guid == PARTITION_GUID_TYPE_LINUX_FS {
+                    match Ext2FileSystem::mount_ro(extended_disk.clone(), partition.as_disk_range())
+                    {
+                        Ok(ext2) => {
+                            part = Some((i, ext2));
+                            break;
+                        }
+                        Err(e) => {
+                            printf!(b"Failed to mount partition 0x%b as ext2: ", i);
+                            e.printf();
+                        }
+                    }
+                }
+            }
+            if let Some(part) = part {
+                part
+            } else {
+                printf!(b"Couldn't find an ext2-formatted linux type filesystem partition.\r\n");
+                video.write_string(b"No ext2 partition !\n");
+                kpanic();
+            }
         };
-        let mut ext2 = Ext2FileSystem::mount_ro(extended_disk, part0.as_disk_range())
-            .unwrap_or_else(|e| e.panic());
-        video.write_string(b"Mounted ext2\n");
+        video.write_string(b"Mounted ext2 partition 0x");
+        video.write_hex_u8(part_i as u8);
+        video.write_string(b".\n");
+        printf!(b"Mounted partition 0x%b as ext2.\r\n\n", part_i);
+
         show_mem!();
 
         let Ext2FileType::Directory(root) = ext2.open(2).unwrap_or_else(|e| e.panic()) else {
+            printf!(b"Inode 2 is not a directory !\r\n");
             video.write_string(b"Root is not a directory !\n");
             kpanic();
         };
 
+        printf!(b"Listing files of root directory (inode 2):\r\n");
         for entry in root.listdir() {
-            printf!(b"/");
+            printf!(b"    /");
             write_buffer_as_string(entry.get_name());
             printf!(b"\r\n");
         }
+        printf!(b"Done.\r\n\n");
 
         if !is_long_mode_supported() {
+            printf!(b"Long mode not supported\r\n");
             video.write_string(b"Failed to boot: Long mode not supported !\n");
             kpanic();
         }
+        printf!(b"CPU supports long mode\r\n\n");
 
-        enable_paging();
+        enable_paging(temp64 as usize);
 
         #[allow(clippy::empty_loop)]
         loop {}
+    }
+}
+
+#[naked]
+#[no_mangle]
+pub extern "C" fn temp64() -> ! {
+    unsafe {
+        core::arch::naked_asm!(".code64", "cli", "2:", "hlt", "jmp 2b");
     }
 }

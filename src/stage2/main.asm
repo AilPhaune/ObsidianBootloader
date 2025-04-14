@@ -13,3 +13,4 @@ stage3_entry:
 %include "asm/io.asm"
 %include "asm/bios.asm"
 %include "asm/cpuid.asm"
+%include "asm/paging.asm"

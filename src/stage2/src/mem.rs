@@ -5,7 +5,7 @@ use core::{
 
 use crate::{
     bios::{unsafe_call_bios_interrupt, BiosInterruptResult},
-    eflags, kpanic, ptr_to_seg_off,
+    eflags, kpanic, printf, ptr_to_seg_off,
     video::Video,
 };
 
@@ -141,6 +141,12 @@ pub fn detect_system_memory(bios_idt: usize) -> Result<(), u8> {
                 prev: ptr::null_mut(),
                 next: ptr::null_mut(),
             };
+
+            printf!(
+                b"Heap allocator: begin=0x%x, end=0x%x\r\n",
+                (header as usize) + size_of::<MemoryBlock>(),
+                max_addr
+            );
         }
 
         Ok(())
@@ -279,7 +285,19 @@ struct MemoryBlock {
 
 fn get_first_header() -> *mut MemoryBlock {
     let mem = get_mem_map();
-    let base_addr = mem.base_addr() as usize;
+    let base_addr = {
+        let base = mem.base_addr() as usize;
+        if mem.len() < 16 * 1024 * 1024 {
+            unsafe {
+                Video::get().write_string(b"Insufficient memory !\n");
+            }
+            printf!(b"Not enough memory !\r\n");
+            kpanic();
+        }
+        // Reserve first 15MiB (in theory, base should be at 1MiB, so we start allocating heap at 16MiB).
+        // Will be used for page tables, etc.
+        base + 15 * 1024 * 1024
+    };
     // Find first 4Kb aligned address
     let aligned_addr = (base_addr & !(0x1000 - 1)) + 0x1000;
     let header_size = size_of::<MemoryBlock>();

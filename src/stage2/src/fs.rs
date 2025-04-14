@@ -246,6 +246,8 @@ impl Ext2Error {
         }
         kpanic();
     }
+
+    pub fn printf(&self) {}
 }
 
 pub enum InodeReadingLocationInfo {

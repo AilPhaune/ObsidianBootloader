@@ -154,6 +154,7 @@ impl DiskError {
     }
 }
 
+#[derive(Clone)]
 pub struct ExtendedDisk {
     disk: u8,
     bios_idt: usize,
