@@ -30,6 +30,19 @@ check_extended_disk:
     mov al, 0
     ret
 
+; Reads the parameters of the disk
+; Parameters:
+;    dl: drive number
+; Returns:
+;    ah: error code if failed (carry flag set on failure)
+; Modifies:
+;    Nothing (Don't trust BIOS)
+read_drive_parameters:
+    mov ah, 0x48
+    mov si, disk_parameters_struct
+    int 0x13
+    ret
+
 ; Reads sectors from disk
 ; Parameters:
 ;    dl:    drive number
@@ -53,3 +66,14 @@ disk_address_packet:
     .dap_dest_segment:      dw 0
     .dap_lba_lo:            dd 0
     .dap_lba_hi:            dd 0
+
+disk_parameters_struct:
+    .dps_size:              dw 0x1E
+    .dps_flags:             dw 0
+    .dps_cylinders:         dd 0
+    .dps_heads:             dd 0
+    .dps_sectors_per_track: dd 0
+    .dps_total_sectors_lo:  dd 0
+    .dps_total_sectors_hi:  dd 0
+    .dps_bytes_per_sector:  dw 0
+    .dps_extension:         dd 0

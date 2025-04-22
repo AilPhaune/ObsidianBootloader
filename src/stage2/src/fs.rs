@@ -5,6 +5,7 @@ use crate::{
     gpt::DiskRange,
     kpanic,
     mem::{Box, Buffer, RefIterVec, Vec},
+    printf,
     video::Video,
 };
 
@@ -160,20 +161,21 @@ pub const INODE_FLAG_AFS_DIRECTORY: u32 = 0x20000;
 pub const INODE_FLAG_JOURNAL_FILE_DATA: u32 = 0x40000;
 
 pub enum Ext2Error {
-    DiskError(DiskError),
-    BadDiskSectorSize(u16),
-    BadBlockSize(usize, u16),
     BadBlockGroupDescriptorTableEntrySize(usize, usize),
-    BadInodeIndex(usize),
     BufferTooSmall(usize, usize),
     UnsupportedInodeType(u16),
-    InvalidArgument,
+    BadBlockSize(usize, u16),
+    BadDiskSectorSize(u16),
+    DiskError(DiskError),
+    BadInodeIndex(usize),
     DirectoryParseFailed,
-    NullBlockSize,
-    NullPointer,
-    BadSuperblock,
-    FailedMemAlloc,
+    InvalidArgument,
     BufferCopyError,
+    FailedMemAlloc,
+    NullBlockSize,
+    BadSuperblock,
+    NullPointer,
+    NotFound,
 }
 
 impl Ext2Error {
@@ -242,6 +244,9 @@ impl Ext2Error {
                 Ext2Error::BufferCopyError => {
                     video.write_string(b"Buffer copy error\n");
                 }
+                Ext2Error::NotFound => {
+                    video.write_string(b"Not found\n");
+                }
             }
         }
         kpanic();
@@ -250,6 +255,7 @@ impl Ext2Error {
     pub fn printf(&self) {}
 }
 
+#[derive(Clone, Copy)]
 pub enum InodeReadingLocationInfo {
     Direct(usize),
     Single(usize),
@@ -257,6 +263,7 @@ pub enum InodeReadingLocationInfo {
     Triple(usize, usize, usize),
 }
 
+#[derive(Clone, Copy)]
 pub struct InodeReadingLocation {
     location: InodeReadingLocationInfo,
     table_size: usize,
@@ -368,6 +375,7 @@ impl InodeReadingLocation {
     }
 }
 
+#[derive(Clone)]
 pub struct CachedInodeReadingLocation {
     location: InodeReadingLocation,
     inode: Ext2Inode,
@@ -602,11 +610,17 @@ impl<'a> Ext2File<'a> {
 
     fn internal_update_buffer(&mut self) -> Result<(), Ext2Error> {
         self.cached_buffer_size = self.fd.read_block(self.ext2, &mut self.block_buffer)?;
+        self.cached_buffer_block = self.fd.location.current_idx();
         Ok(())
     }
 
     pub fn seek(&mut self, offset: usize) -> Result<(), Ext2Error> {
         if offset >= self.fd.inode.size_lo as usize {
+            printf!(
+                b"Invalid offset: %x (max size: %x)\n",
+                offset,
+                self.fd.inode.size_lo as usize
+            );
             return Err(Ext2Error::InvalidArgument);
         }
         let bs = self.ext2.block_size();
@@ -1037,5 +1051,49 @@ impl Ext2FileSystem {
                 fd.inode.type_and_permissions,
             ))
         }
+    }
+
+    pub fn find_inode(&mut self, path: &[u8]) -> Result<Option<usize>, Ext2Error> {
+        if path.len() == 1 && path[0] == b'/' {
+            return Ok(Some(2));
+        }
+        if path.is_empty() || path[0] != b'/' || path[path.len() - 1] == b'/' {
+            return Err(Ext2Error::InvalidArgument);
+        }
+        let mut parts: Vec<&[u8]> = Vec::new(16);
+        let mut last_slash = 1;
+        for (i, &c) in path.iter().enumerate().skip(1) {
+            if c == b'/' && last_slash < path.len() && i < path.len() && last_slash <= i {
+                let part = &path[last_slash..i];
+                if part.is_empty() {
+                    return Err(Ext2Error::InvalidArgument);
+                }
+                last_slash = i + 1;
+                parts.push(part);
+            }
+        }
+        if last_slash < path.len() {
+            parts.push(&path[last_slash..]);
+        }
+
+        let mut inode = 2;
+        for part in parts {
+            let file = self.open(inode)?;
+            match file {
+                Ext2FileType::Directory(dir) => {
+                    for entry in dir.listdir() {
+                        if entry.name == *part {
+                            inode = entry.inode as usize;
+                            break;
+                        }
+                    }
+                }
+                _ => {
+                    return Err(Ext2Error::NotFound);
+                }
+            }
+        }
+
+        Ok(Some(inode))
     }
 }

@@ -1,8 +1,10 @@
 use crate::{
+    elf::{ElfError, ElfFile64, SEGMENT_TYPE_LOAD},
     gdt::{init_gdtr, CODE64_SELECTOR, DATA64_SELECTOR},
     kpanic,
-    mem::{Vec, RANGE_TYPE_AVAILABLE, SYSTEM_MEMORY_MAP, USED_MAP},
+    mem::{Buffer, Vec, RANGE_TYPE_AVAILABLE, SYSTEM_MEMORY_MAP, USED_MAP},
     printf,
+    video::Video,
 };
 
 extern "cdecl" {
@@ -10,7 +12,7 @@ extern "cdecl" {
         pml4: usize,
         data_selector: usize,
         code_selector: usize,
-        entry64: usize,
+        entry64: u64,
     );
 }
 
@@ -170,7 +172,6 @@ fn parse_memory_layout() -> Vec<MemoryRegion> {
 }
 
 struct SimpleArenaAllocator {
-    start: usize,
     end: usize,
     current: usize,
 }
@@ -183,7 +184,6 @@ impl SimpleArenaAllocator {
             end
         );
         SimpleArenaAllocator {
-            start,
             end,
             current: start,
         }
@@ -213,23 +213,23 @@ impl SimpleArenaAllocator {
 
 static mut PML4: *mut u64 = core::ptr::null_mut();
 
-const PAGE_SIZE: usize = 4096;
-const PAGE_SIZE_2MB: usize = 2 * 1024 * 1024;
+pub const PAGE_SIZE: usize = 4096;
+pub const PAGE_SIZE_2MB: usize = 2 * 1024 * 1024;
 
 // Page Table Entry Flags
-const PAGE_PRESENT: u64 = 1 << 0;
-const PAGE_RW: u64 = 1 << 1;
-const PAGE_USER: u64 = 1 << 2;
-const PAGE_WRITE_THROUGH: u64 = 1 << 3;
-const PAGE_CACHE_DISABLE: u64 = 1 << 4;
-const PAGE_ACCESSED: u64 = 1 << 5;
-const PAGE_DIRTY: u64 = 1 << 6;
-const PAGE_HUGE: u64 = 1 << 7;
-const PAGE_GLOBAL: u64 = 1 << 8;
-const PAGE_NO_EXECUTE: u64 = 1 << 63;
+pub const PAGE_PRESENT: u64 = 1 << 0;
+pub const PAGE_RW: u64 = 1 << 1;
+pub const PAGE_USER: u64 = 1 << 2;
+pub const PAGE_WRITE_THROUGH: u64 = 1 << 3;
+pub const PAGE_CACHE_DISABLE: u64 = 1 << 4;
+pub const PAGE_ACCESSED: u64 = 1 << 5;
+pub const PAGE_DIRTY: u64 = 1 << 6;
+pub const PAGE_HUGE: u64 = 1 << 7;
+pub const PAGE_GLOBAL: u64 = 1 << 8;
+pub const PAGE_NO_EXECUTE: u64 = 1 << 63;
 
-const KB4: usize = 4 * 1024;
-const MB2: usize = 2 * 1024 * 1024;
+pub const KB4: usize = 4 * 1024;
+pub const MB2: usize = 2 * 1024 * 1024;
 
 // Helper to extract indices for 4-level paging
 fn split_virt_addr(addr: u64) -> (usize, usize, usize, usize) {
@@ -243,10 +243,6 @@ fn split_virt_addr(addr: u64) -> (usize, usize, usize, usize) {
 // Align address down to nearest 4 KiB or 2 MiB
 fn align_down(addr: u64, align: u64) -> u64 {
     addr & !(align - 1)
-}
-
-fn align_up(addr: u64, align: u64) -> u64 {
-    (addr + align - 1) & !(align - 1)
 }
 
 unsafe fn map_page_4k(virt: u64, phys: u64, flags: u64, allocator: &mut SimpleArenaAllocator) {
@@ -308,45 +304,90 @@ unsafe fn map_page_2mb(virt: u64, phys: u64, flags: u64, allocator: &mut SimpleA
     *pd_entry = align_down(phys, PAGE_SIZE_2MB as u64) | flags | PAGE_PRESENT | PAGE_HUGE;
 }
 
-unsafe fn translate_virtual(virt: u64) -> Option<u64> {
-    let (pml4_idx, pdpt_idx, pd_idx, pt_idx) = split_virt_addr(virt);
+static mut KERNEL_BUFFERS: Option<Vec<Buffer>> = None;
 
-    let pml4_entry = *PML4.add(pml4_idx);
-    if pml4_entry & PAGE_PRESENT == 0 {
-        return None;
+fn load_kernel<'a>(
+    kernel_file: &'a mut ElfFile64<'a>,
+    allocator: &mut SimpleArenaAllocator,
+) -> Result<(), ElfError> {
+    let phs = kernel_file.load_program_headers()?.clone();
+    let file = kernel_file.get_file_mut();
+
+    let mut buffers = Vec::new(phs.len());
+
+    for ph in phs.iter() {
+        if ph.segment_type != SEGMENT_TYPE_LOAD {
+            continue;
+        }
+
+        let mut buf = Buffer::new(ph.p_memsz as usize).ok_or(ElfError::FailedMemAlloc)?;
+        unsafe { buf.get_ptr().write_bytes(0, ph.p_memsz as usize) };
+
+        let read = {
+            file.seek(ph.p_offset as usize)
+                .map_err(ElfError::Ext2Error)?;
+            file.read(&mut buf, ph.p_filesz as usize)
+                .map_err(ElfError::Ext2Error)?
+        };
+
+        if read != ph.p_filesz as usize {
+            printf!(
+                b"Read 0x%x bytes of 0x%x bytes\r\n",
+                read,
+                ph.p_filesz as usize
+            );
+            unsafe {
+                Video::get().write_string(b"Failed to boot: Could not read kernel !\n");
+            }
+            kpanic();
+        }
+
+        let buf_ptr = unsafe { buf.get_ptr() as u64 };
+        let buf_len = buf.len();
+        let buf_num_pages = buf_len.div_ceil(KB4);
+
+        printf!(
+            b"Mapping kernel (4KiB pages) vaddr=0x%x%x, paddr=0x%x%x, npages=0x%x\r\n",
+            (ph.p_vaddr >> 32) as u32,
+            ph.p_vaddr as u32,
+            (buf_ptr >> 32) as u32,
+            buf_ptr as u32,
+            buf_num_pages as u32
+        );
+
+        for i in 0..buf_num_pages {
+            let offset = (i as u64) * (KB4 as u64);
+            let virt = ph.p_vaddr + offset;
+            let phys = buf_ptr + offset;
+
+            unsafe {
+                map_page_4k(virt, phys, PAGE_RW, allocator);
+            }
+        }
+
+        buffers.push(buf);
     }
-    let pdpt = (pml4_entry & 0x000F_FFFF_FFFF_F000) as *const u64;
 
-    let pdpt_entry = *pdpt.add(pdpt_idx);
-    if pdpt_entry & PAGE_PRESENT == 0 {
-        return None;
-    }
-    let pd = (pdpt_entry & 0x000F_FFFF_FFFF_F000) as *const u64;
-
-    let pd_entry = *pd.add(pd_idx);
-    if pd_entry & PAGE_PRESENT == 0 {
-        return None;
+    unsafe {
+        KERNEL_BUFFERS = Some(buffers);
     }
 
-    if pd_entry & PAGE_HUGE != 0 {
-        let base = pd_entry & 0x000F_FFFF_FFE0_0000;
-        let offset = virt & 0x1F_FFFF;
-        return Some(base + offset);
-    }
-
-    let pt = (pd_entry & 0x000F_FFFF_FFFF_F000) as *const u64;
-    let pt_entry = *pt.add(pt_idx);
-    if pt_entry & PAGE_PRESENT == 0 {
-        return None;
-    }
-
-    let base = pt_entry & 0x000F_FFFF_FFFF_F000;
-    let offset = virt & 0xFFF;
-    Some(base + offset)
+    Ok(())
 }
 
-pub fn enable_paging(entry64: usize) {
+pub fn enable_paging_and_run_kernel<'a>(kernel_file: &'a mut ElfFile64<'a>) {
     unsafe {
+        let entry64 = kernel_file.entry_point();
+        printf!(
+            b"Kernel entry point is 0x%x%x\r\n\n",
+            (entry64 >> 32) as u32,
+            entry64 as u32
+        );
+        if entry64 != 0xFFFF_8000_0000_0000 {
+            Video::get().write_string(b"Kernel entry point is not 0xFFFF800000000000 !\r\n");
+            kpanic();
+        }
+
         let layout = parse_memory_layout();
 
         printf!(b"=== BEGIN MEMORY LAYOUT DUMP ===\r\n");
@@ -388,28 +429,19 @@ pub fn enable_paging(entry64: usize) {
 
         PML4 = allocator.alloc_page();
 
+        printf!(
+            b"Mapping (4KiB pages) 0x00000000 to 0x00100000\r\n",
+            PML4,
+            PML4
+        );
+        // 256 * 4KiB = 1MiB
+        for i in 0..256 {
+            let addr = (i * KB4) as u64;
+            map_page_4k(addr, addr, PAGE_RW, &mut allocator);
+        }
+
         for region in layout.iter() {
-            if region.kind != MemoryRegionType::Usable {
-                continue;
-            }
-
-            if region.start < 0x100_000 {
-                // Map using 4Kb pages
-                let aligned_start = (region.start + 0xFFF) & !0xFFF; // align up
-                let aligned_end = region.end & !0xFFF; // align down
-
-                printf!(
-                    b"Mapping (4KiB pages) 0x%x to 0x%x\r\n",
-                    aligned_start,
-                    aligned_end
-                );
-
-                let mut addr = aligned_start;
-                while addr < aligned_end {
-                    map_page_4k(addr, addr, PAGE_RW, &mut allocator);
-
-                    addr += 4 * 1024;
-                }
+            if region.kind != MemoryRegionType::Usable || region.start < (1024 * 1024) {
                 continue;
             }
 
@@ -430,6 +462,8 @@ pub fn enable_paging(entry64: usize) {
             }
         }
 
+        load_kernel(kernel_file, &mut allocator).unwrap_or_else(|e| e.panic());
+
         printf!(
             b"Paging tables built at 0x%x%x\r\n",
             (PML4 as u64 >> 32) as u32,
@@ -437,6 +471,7 @@ pub fn enable_paging(entry64: usize) {
         );
 
         init_gdtr();
+        printf!(b"\r\nJumping to kernel.\r\n\n\n");
         enable_paging_and_jump64(PML4 as usize, DATA64_SELECTOR, CODE64_SELECTOR, entry64);
     }
 }

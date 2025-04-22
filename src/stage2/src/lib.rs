@@ -7,6 +7,7 @@
 pub mod arith;
 pub mod bios;
 pub mod e9;
+pub mod elf;
 pub mod fs;
 pub mod gdt;
 pub mod gpt;
@@ -53,11 +54,12 @@ pub mod eflags {
 
 use bios::ExtendedDisk;
 use e9::{write_buffer_as_string, write_guid, write_u64_decimal};
+use elf::{load_elf, ElfFileFlavour};
 use fs::{Ext2FileSystem, Ext2FileType};
 use gdt::{is_cpuid_supported, is_long_mode_supported};
 use gpt::{GUIDPartitionTable, PARTITION_GUID_TYPE_LINUX_FS};
-use mem::{detect_system_memory, get_mem_free, get_mem_total, get_mem_used, Buffer};
-use paging::enable_paging;
+use mem::{detect_system_memory, get_mem_free, get_mem_total, get_mem_used};
+use paging::enable_paging_and_run_kernel;
 
 use crate::video::{Color, Video};
 
@@ -119,15 +121,6 @@ pub fn kpanic() -> ! {
 
     #[allow(clippy::empty_loop)]
     loop {}
-}
-
-pub fn fnv1a64(data: &Buffer) -> u64 {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in data.iter() {
-        hash ^= byte as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
 }
 
 #[no_mangle]
@@ -279,17 +272,41 @@ pub extern "cdecl" fn rust_entry(bios_idt: usize, boot_drive: usize) -> ! {
         }
         printf!(b"CPU supports long mode\r\n\n");
 
-        enable_paging(temp64 as usize);
+        let mut kernel_file = match ext2
+            .find_inode(b"/kernel64.elf")
+            .unwrap_or_else(|e| e.panic())
+        {
+            Some(inode) => {
+                printf!(b"Found kernel at /kernel64.elf, inode 0x%x\r\n", inode);
+                match ext2.open(inode).unwrap_or_else(|e| e.panic()) {
+                    Ext2FileType::File(file) => {
+                        let elf = load_elf(file).unwrap_or_else(|e| e.panic());
+                        match elf {
+                            ElfFileFlavour::Elf64(elf) => elf,
+                            ElfFileFlavour::Elf32(_) => {
+                                printf!(b"Kernel is an ELF32 file, expected 64-bit kernel (ELF64) !\r\n");
+                                video.write_string(b"Failed to boot: Expected 64-bit kernel !\n");
+                                kpanic();
+                            }
+                        }
+                    }
+                    _ => {
+                        printf!(b"/kernel64.elf is not a file !\r\n");
+                        video.write_string(b"Failed to boot: Could not find kernel !\n");
+                        kpanic();
+                    }
+                }
+            }
+            None => {
+                video.write_string(b"Failed to boot: /kernel64.elf not found !\n");
+                printf!(b"/kernel64.elf not found !\r\n");
+                kpanic();
+            }
+        };
+
+        enable_paging_and_run_kernel(&mut kernel_file);
 
         #[allow(clippy::empty_loop)]
         loop {}
-    }
-}
-
-#[naked]
-#[no_mangle]
-pub extern "C" fn temp64() -> ! {
-    unsafe {
-        core::arch::naked_asm!(".code64", "cli", "2:", "hlt", "jmp 2b");
     }
 }

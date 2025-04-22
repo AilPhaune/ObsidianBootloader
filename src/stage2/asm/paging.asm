@@ -1,5 +1,9 @@
 EXTERN GDTR
 
+addr_64:
+    .lo: dd 0
+    .hi: dd 0    
+
 GLOBAL enable_paging_and_jump64
 enable_paging_and_jump64:
     [bits 32]
@@ -35,9 +39,21 @@ enable_paging_and_jump64:
     mov fs, ax
     mov gs, ax
 
-    mov eax, [esp + 12] ; 64-bit code selector
-    mov ebx, [esp + 16] ; entry64
+    mov eax, [esp + 16] ; entry64 lo
+    mov [addr_64.lo], eax
+    mov eax, [esp + 20] ; entry64 hi
+    mov [addr_64.hi], eax
 
+    mov eax, [esp + 12] ; 64-bit code selector
     push eax
-    push ebx
+    push dword .lmode64
     retf
+.lmode64:
+    [bits 64]
+    mov rbx, [addr_64]
+    call rbx
+
+    cli
+    hlt
+    jmp $
+    [bits 32]

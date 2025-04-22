@@ -7,10 +7,6 @@ env = Environment(ENV = os.environ)
 mode = ARGUMENTS.get('mode', 'release')
 size = int(ARGUMENTS.get('size', '32'))
 
-if size < 32:
-    print('Size must be at least 32 MiB')
-    exit(1)
-
 env['MODE'] = mode
 env['SIZE'] = size
 

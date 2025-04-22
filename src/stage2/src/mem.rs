@@ -483,6 +483,10 @@ where
         }
     }
 
+    pub fn unbox(self) -> T {
+        unsafe { self.ptr.read() }
+    }
+
     /// # Safety
     /// ptr must be a pointer returned by malloc and point to a valid and initialized T
     /// ptr is invalidated when this Box is dropped
@@ -720,11 +724,25 @@ where
     }
 }
 
+impl<T> Clone for Vec<T>
+where
+    T: Clone,
+{
+    fn clone(&self) -> Self {
+        let mut other = Vec::new(self.len);
+        for i in 0..self.len {
+            other.push(self.get(i).unwrap_or_else(|| kpanic()).clone());
+        }
+        other
+    }
+}
+
 impl<T> Drop for Vec<T>
 where
     T: Sized,
 {
     fn drop(&mut self) {
+        while self.pop().is_some() {}
         mem_free(self.ptr);
     }
 }
@@ -868,6 +886,36 @@ impl Drop for Buffer {
         if self.owns_data {
             mem_free(self.ptr);
         }
+    }
+}
+
+impl Clone for Buffer {
+    fn clone(&self) -> Self {
+        let mut other = Buffer::new(self.len).unwrap_or_else(|| kpanic());
+        self.copy_to(0, &mut other, 0, self.len);
+        other
+    }
+}
+
+impl PartialEq for Buffer {
+    fn eq(&self, other: &Buffer) -> bool {
+        self.len == other.len
+            && unsafe { memcmp(self.ptr as usize, other.ptr as usize, self.len) == 0 }
+    }
+}
+impl Eq for Buffer {}
+
+impl PartialEq<[u8]> for Buffer {
+    fn eq(&self, other: &[u8]) -> bool {
+        self.len == other.len()
+            && unsafe { memcmp(self.ptr as usize, other.as_ptr() as usize, self.len) == 0 }
+    }
+}
+
+impl PartialEq<Buffer> for [u8] {
+    fn eq(&self, other: &Buffer) -> bool {
+        self.len() == other.len
+            && unsafe { memcmp(self.as_ptr() as usize, other.ptr as usize, self.len()) == 0 }
     }
 }
 

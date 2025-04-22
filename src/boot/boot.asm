@@ -44,7 +44,7 @@ relocate:
     ; Read stage 1 at 0x7c00
     mov word [disk_address_packet.dap_dest_segment], 0x07c0
     mov word [disk_address_packet.dap_dest_offset], 0x0000
-    mov word [disk_address_packet.dap_num_sectors_read], STAGE1_SIZE
+    mov word [disk_address_packet.dap_num_sectors_read], 64
     mov dword [disk_address_packet.dap_lba_lo], 34
     call read_sectors
 
@@ -71,5 +71,3 @@ dw 0xaa55
 
 ENDL EQU 10
 CR EQU 13
-
-STAGE1_SIZE EQU 128
