@@ -309,6 +309,17 @@ fn get_first_header() -> *mut MemoryBlock {
     first_header as *mut MemoryBlock
 }
 
+pub fn get_last_header() -> u32 {
+    let mut header = get_first_header();
+    loop {
+        let header_v = unsafe { header.read_unaligned() };
+        if header_v.next.is_null() {
+            return header as u32;
+        }
+        header = header_v.next;
+    }
+}
+
 fn mem_alloc<T>(size: usize) -> Option<*mut T> {
     let header_size = size_of::<MemoryBlock>();
     let mut header = get_first_header();
@@ -602,6 +613,16 @@ where
         }
     }
 
+    /// # Safety
+    /// Creates a null pointer
+    pub const unsafe fn unsafe_null() -> Self {
+        Self {
+            ptr: ptr::null_mut(),
+            len: 0,
+            cap: 0,
+        }
+    }
+
     pub fn ensure_capacity(&mut self, capacity: usize) {
         if self.cap < capacity {
             unsafe {
@@ -742,6 +763,9 @@ where
     T: Sized,
 {
     fn drop(&mut self) {
+        if self.ptr.is_null() {
+            return;
+        }
         while self.pop().is_some() {}
         mem_free(self.ptr);
     }

@@ -1,8 +1,11 @@
+use core::ptr::addr_of;
+
 use crate::{
+    e9::write_u32_decimal,
     elf::{ElfError, ElfFile64, SEGMENT_TYPE_LOAD},
     gdt::{init_gdtr, CODE64_SELECTOR, DATA64_SELECTOR},
     kpanic,
-    mem::{Buffer, Vec, RANGE_TYPE_AVAILABLE, SYSTEM_MEMORY_MAP, USED_MAP},
+    mem::{self, Buffer, Vec, RANGE_TYPE_AVAILABLE, SYSTEM_MEMORY_MAP, USED_MAP},
     printf,
     video::Video,
 };
@@ -14,6 +17,11 @@ extern "cdecl" {
         code_selector: usize,
         entry64: u64,
         stack_pointer: u64,
+        memory_layout: usize,
+        memory_layout_entry_count: usize,
+        page_alloc_curr: usize,
+        page_alloc_end: usize,
+        begin_usable_memory: usize,
     ) -> !;
 }
 
@@ -22,6 +30,13 @@ pub struct MemoryRegion {
     start: u64,
     end: u64,
     kind: MemoryRegionType,
+}
+
+#[repr(C, packed)]
+pub struct OsMemoryRegion {
+    start: u64,
+    end: u64,
+    usable: u64,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -246,7 +261,12 @@ fn align_down(addr: u64, align: u64) -> u64 {
     addr & !(align - 1)
 }
 
-unsafe fn map_page_4k(virt: u64, phys: u64, flags: u64, allocator: &mut SimpleArenaAllocator) {
+// Align address up to nearest 4 KiB or 2 MiB
+fn align_up(addr: u64, align: u64) -> u64 {
+    (addr + align - 1) & !(align - 1)
+}
+
+unsafe fn map_page_4kb(virt: u64, phys: u64, flags: u64, allocator: &mut SimpleArenaAllocator) {
     let (pml4_idx, pdpt_idx, pd_idx, pt_idx) = split_virt_addr(virt);
 
     let pml4_entry = &mut *PML4.add(pml4_idx);
@@ -308,6 +328,7 @@ unsafe fn map_page_2mb(virt: u64, phys: u64, flags: u64, allocator: &mut SimpleA
 const KERNEL_STACK_SIZE: u64 = 2 * MB2 as u64;
 
 static mut KERNEL_BUFFERS: Option<Vec<Buffer>> = None;
+static mut KERNEL_MEMORY_LAYOUT: [OsMemoryRegion; 32] = unsafe { core::mem::zeroed() };
 
 fn load_kernel<'a>(
     kernel_file: &'a mut ElfFile64<'a>,
@@ -370,23 +391,23 @@ fn load_kernel<'a>(
             let phys = buf_ptr + offset;
 
             unsafe {
-                map_page_4k(virt, phys, PAGE_RW, allocator);
+                map_page_4kb(virt, phys, PAGE_RW, allocator);
             }
         }
 
         buffers.push(buf);
     }
 
-    if max_addr > 0xFFFF_F000_0000_0000 {
+    if max_addr > 0xFFFF_9000_0000_0000 {
         printf!(
-            b"Kernel reserves memory until 0x%x%x > 0xFFFFF00000000000 !\r\n",
+            b"Kernel reserves memory until 0x%x%x > 0xFFFF900000000000 !\r\n",
             (max_addr >> 32) as u32,
             max_addr as u32
         );
         kpanic();
     }
 
-    let begin_stack = 0xFFFF_F000_0000_0000;
+    let begin_stack = 0xFFFF_9000_0000_0000;
     let end_stack = begin_stack + KERNEL_STACK_SIZE;
 
     let stack_buffer = Buffer::new(KERNEL_STACK_SIZE as usize).ok_or(ElfError::FailedMemAlloc)?;
@@ -408,12 +429,15 @@ fn load_kernel<'a>(
 
             map_page_2mb(virt, phys, PAGE_RW, allocator);
         }
+        buffers.push(stack_buffer);
 
         KERNEL_BUFFERS = Some(buffers);
     }
 
     Ok((end_stack, end_stack))
 }
+
+pub const DIRECT_MAPPING_OFFSET: u64 = 0xFFFF_A000_0000_0000;
 
 pub fn enable_paging_and_run_kernel<'a>(kernel_file: &'a mut ElfFile64<'a>) {
     unsafe {
@@ -477,7 +501,8 @@ pub fn enable_paging_and_run_kernel<'a>(kernel_file: &'a mut ElfFile64<'a>) {
         // 256 * 4KiB = 1MiB
         for i in 0..256 {
             let addr = (i * KB4) as u64;
-            map_page_4k(addr, addr, PAGE_RW, &mut allocator);
+            map_page_4kb(addr, addr, PAGE_RW, &mut allocator);
+            map_page_4kb(addr + DIRECT_MAPPING_OFFSET, addr, PAGE_RW, &mut allocator);
         }
 
         for region in layout.iter() {
@@ -485,8 +510,8 @@ pub fn enable_paging_and_run_kernel<'a>(kernel_file: &'a mut ElfFile64<'a>) {
                 continue;
             }
 
-            let aligned_start = (region.start + 0x1F_FFFF) & !0x1F_FFFF; // align up
-            let aligned_end = region.end & !0x1F_FFFF; // align down
+            let aligned_start = align_up(region.start, MB2 as u64);
+            let aligned_end = align_down(region.end, MB2 as u64);
 
             printf!(
                 b"Mapping (2MiB pages) 0x%x to 0x%x\r\n",
@@ -497,15 +522,76 @@ pub fn enable_paging_and_run_kernel<'a>(kernel_file: &'a mut ElfFile64<'a>) {
             let mut addr = aligned_start;
             while addr < aligned_end {
                 map_page_2mb(addr, addr, PAGE_RW, &mut allocator);
+                map_page_2mb(addr + DIRECT_MAPPING_OFFSET, addr, PAGE_RW, &mut allocator);
 
-                addr += 2 * 1024 * 1024;
+                addr += MB2 as u64;
+            }
+
+            let kb4_aligned_start = align_up(region.start, KB4 as u64);
+            printf!(
+                b"> Sub-mapping (4KiB pages) 0x%x to 0x%x\r\n",
+                kb4_aligned_start,
+                aligned_start
+            );
+            let mut addr = kb4_aligned_start;
+            while addr < aligned_start {
+                map_page_4kb(addr, addr, PAGE_RW, &mut allocator);
+                map_page_4kb(addr + DIRECT_MAPPING_OFFSET, addr, PAGE_RW, &mut allocator);
+                addr += KB4 as u64;
+            }
+
+            let kb4_aligned_end = align_down(region.end, KB4 as u64);
+            printf!(
+                b"> Sub-mapping (4KiB pages) 0x%x to 0x%x\r\n",
+                aligned_end,
+                kb4_aligned_end
+            );
+            let mut addr = aligned_end;
+            while addr < kb4_aligned_end {
+                map_page_4kb(addr, addr, PAGE_RW, &mut allocator);
+                map_page_4kb(addr + DIRECT_MAPPING_OFFSET, addr, PAGE_RW, &mut allocator);
+                addr += KB4 as u64;
+            }
+        }
+
+        let num_memory_regions = layout.len();
+
+        #[allow(static_mut_refs)]
+        if num_memory_regions > KERNEL_MEMORY_LAYOUT.len() {
+            printf!(b"Too many memory regions in layout !\r\n");
+            kpanic();
+        }
+        printf!(
+            b"\r\nMemory layout saved at 0x%x (",
+            addr_of!(KERNEL_MEMORY_LAYOUT)
+        );
+        write_u32_decimal(num_memory_regions as u32);
+        printf!(b" entries)\r\n\n");
+        for (i, reg) in layout.iter().enumerate() {
+            #[allow(static_mut_refs)]
+            match KERNEL_MEMORY_LAYOUT.get_mut(i) {
+                None => {
+                    printf!(b"Too many memory regions in layout !\r\n");
+                    kpanic();
+                }
+                Some(region) => {
+                    *region = OsMemoryRegion {
+                        start: reg.start,
+                        end: reg.end,
+                        usable: if reg.kind == MemoryRegionType::Usable {
+                            1
+                        } else {
+                            0
+                        },
+                    }
+                }
             }
         }
 
         let (_, stack_end) = load_kernel(kernel_file, &mut allocator).unwrap_or_else(|e| e.panic());
 
         printf!(
-            b"Paging tables built at 0x%x%x\r\n",
+            b"\r\nPaging tables built at 0x%x%x\r\n",
             (PML4 as u64 >> 32) as u32,
             PML4 as u32
         );
@@ -518,6 +604,11 @@ pub fn enable_paging_and_run_kernel<'a>(kernel_file: &'a mut ElfFile64<'a>) {
             CODE64_SELECTOR,
             entry64,
             stack_end,
+            addr_of!(KERNEL_MEMORY_LAYOUT) as usize,
+            num_memory_regions,
+            allocator.current,
+            allocator.end,
+            mem::get_last_header() as usize,
         );
     }
 }
