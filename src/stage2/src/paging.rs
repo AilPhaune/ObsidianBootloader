@@ -13,7 +13,8 @@ extern "cdecl" {
         data_selector: usize,
         code_selector: usize,
         entry64: u64,
-    );
+        stack_pointer: u64,
+    ) -> !;
 }
 
 #[derive(Copy, Clone)]
@@ -304,18 +305,26 @@ unsafe fn map_page_2mb(virt: u64, phys: u64, flags: u64, allocator: &mut SimpleA
     *pd_entry = align_down(phys, PAGE_SIZE_2MB as u64) | flags | PAGE_PRESENT | PAGE_HUGE;
 }
 
+const KERNEL_STACK_SIZE: u64 = 2 * MB2 as u64;
+
 static mut KERNEL_BUFFERS: Option<Vec<Buffer>> = None;
 
 fn load_kernel<'a>(
     kernel_file: &'a mut ElfFile64<'a>,
     allocator: &mut SimpleArenaAllocator,
-) -> Result<(), ElfError> {
+) -> Result<(u64, u64), ElfError> {
     let phs = kernel_file.load_program_headers()?.clone();
     let file = kernel_file.get_file_mut();
 
     let mut buffers = Vec::new(phs.len());
 
+    let mut max_addr = 0;
+
     for ph in phs.iter() {
+        if ph.p_vaddr + ph.p_memsz > max_addr {
+            max_addr = ph.p_vaddr + ph.p_memsz;
+        }
+
         if ph.segment_type != SEGMENT_TYPE_LOAD {
             continue;
         }
@@ -368,11 +377,42 @@ fn load_kernel<'a>(
         buffers.push(buf);
     }
 
+    if max_addr > 0xFFFF_F000_0000_0000 {
+        printf!(
+            b"Kernel reserves memory until 0x%x%x > 0xFFFFF00000000000 !\r\n",
+            (max_addr >> 32) as u32,
+            max_addr as u32
+        );
+        kpanic();
+    }
+
+    let begin_stack = 0xFFFF_F000_0000_0000;
+    let end_stack = begin_stack + KERNEL_STACK_SIZE;
+
+    let stack_buffer = Buffer::new(KERNEL_STACK_SIZE as usize).ok_or(ElfError::FailedMemAlloc)?;
+
     unsafe {
+        printf!(
+            b"Mapping kernel stack vaddr=0x%x%x, paddr=0x%x%x, npages=0x%x\r\n",
+            (begin_stack >> 32) as u32,
+            begin_stack as u32,
+            (stack_buffer.get_ptr() as u64 >> 32) as u32,
+            stack_buffer.get_ptr() as u32,
+            (end_stack - begin_stack).div_ceil(MB2 as u64) as u32
+        );
+
+        for i in 0..(end_stack - begin_stack).div_ceil(MB2 as u64) {
+            let offset = i * (MB2 as u64);
+            let virt = begin_stack + offset;
+            let phys = stack_buffer.get_ptr() as u64 + offset;
+
+            map_page_2mb(virt, phys, PAGE_RW, allocator);
+        }
+
         KERNEL_BUFFERS = Some(buffers);
     }
 
-    Ok(())
+    Ok((end_stack, end_stack))
 }
 
 pub fn enable_paging_and_run_kernel<'a>(kernel_file: &'a mut ElfFile64<'a>) {
@@ -383,8 +423,8 @@ pub fn enable_paging_and_run_kernel<'a>(kernel_file: &'a mut ElfFile64<'a>) {
             (entry64 >> 32) as u32,
             entry64 as u32
         );
-        if entry64 != 0xFFFF_8000_0000_0000 {
-            Video::get().write_string(b"Kernel entry point is not 0xFFFF800000000000 !\r\n");
+        if entry64 < 0xFFFF_8000_0000_0000 {
+            Video::get().write_string(b"Kernel entry point is < 0xFFFF800000000000 !\r\n");
             kpanic();
         }
 
@@ -462,7 +502,7 @@ pub fn enable_paging_and_run_kernel<'a>(kernel_file: &'a mut ElfFile64<'a>) {
             }
         }
 
-        load_kernel(kernel_file, &mut allocator).unwrap_or_else(|e| e.panic());
+        let (_, stack_end) = load_kernel(kernel_file, &mut allocator).unwrap_or_else(|e| e.panic());
 
         printf!(
             b"Paging tables built at 0x%x%x\r\n",
@@ -472,6 +512,12 @@ pub fn enable_paging_and_run_kernel<'a>(kernel_file: &'a mut ElfFile64<'a>) {
 
         init_gdtr();
         printf!(b"\r\nJumping to kernel.\r\n\n\n");
-        enable_paging_and_jump64(PML4 as usize, DATA64_SELECTOR, CODE64_SELECTOR, entry64);
+        enable_paging_and_jump64(
+            PML4 as usize,
+            DATA64_SELECTOR,
+            CODE64_SELECTOR,
+            entry64,
+            stack_end,
+        );
     }
 }

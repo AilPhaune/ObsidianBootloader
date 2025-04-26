@@ -6,6 +6,7 @@
 
 pub mod arith;
 pub mod bios;
+pub mod cpu_extensions;
 pub mod e9;
 pub mod elf;
 pub mod fs;
@@ -53,6 +54,7 @@ pub mod eflags {
 }
 
 use bios::ExtendedDisk;
+use cpu_extensions::check_and_enable_cpu_extensions;
 use e9::{write_buffer_as_string, write_guid, write_u64_decimal};
 use elf::{load_elf, ElfFileFlavour};
 use fs::{Ext2FileSystem, Ext2FileType};
@@ -147,6 +149,23 @@ pub extern "cdecl" fn rust_entry(bios_idt: usize, boot_drive: usize) -> ! {
             kpanic();
         }
         printf!(b"CPU supports cpuid\r\n");
+
+        if !is_long_mode_supported() {
+            printf!(b"Long mode not supported\r\n");
+            video.write_string(b"Failed to boot: Long mode not supported !\n");
+            kpanic();
+        }
+        printf!(b"CPU supports long mode\r\n\n");
+
+        let extensions = check_and_enable_cpu_extensions();
+        if !extensions.fpu {
+            video.write_string(b"Failed to boot: FPU not supported !\n");
+            kpanic();
+        }
+        if !extensions.sse {
+            video.write_string(b"Failed to boot: SSE not supported !\n");
+            kpanic();
+        }
 
         let mut extended_disk = ExtendedDisk::new(boot_drive as u8, bios_idt);
         if !extended_disk.check_present() {
@@ -264,13 +283,6 @@ pub extern "cdecl" fn rust_entry(bios_idt: usize, boot_drive: usize) -> ! {
             printf!(b"\r\n");
         }
         printf!(b"Done.\r\n\n");
-
-        if !is_long_mode_supported() {
-            printf!(b"Long mode not supported\r\n");
-            video.write_string(b"Failed to boot: Long mode not supported !\n");
-            kpanic();
-        }
-        printf!(b"CPU supports long mode\r\n\n");
 
         let mut kernel_file = match ext2
             .find_inode(b"/kernel64.elf")
