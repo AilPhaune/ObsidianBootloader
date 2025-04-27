@@ -113,7 +113,7 @@ pub const FLAG_READABLE: u32 = 4;
 pub enum ElfError {
     UnsupportedEndianness,
     Ext2Error(Ext2Error),
-    FailedMemAlloc,
+    FailedMemAlloc(usize),
     InvalidMagic,
 }
 
@@ -125,8 +125,10 @@ impl ElfError {
                 ElfError::UnsupportedEndianness => {
                     video.write_string(b"Unsupported endianness\n");
                 }
-                ElfError::FailedMemAlloc => {
-                    video.write_string(b"Failed to allocate memory\n");
+                ElfError::FailedMemAlloc(size) => {
+                    video.write_string(b"Failed to allocate memory: 0x");
+                    video.write_hex_u32(*size as u32);
+                    video.write_char(b'\n');
                 }
                 ElfError::InvalidMagic => {
                     video.write_string(b"Invalid ELF magic\n");
@@ -139,7 +141,8 @@ impl ElfError {
 }
 
 fn parse_elf_header(file: &mut Ext2File) -> Result<ElfHeaderFlavour, ElfError> {
-    let mut elf_header = Buffer::new(size_of::<ElfHeader>()).ok_or(ElfError::FailedMemAlloc)?;
+    let mut elf_header = Buffer::new(size_of::<ElfHeader>())
+        .ok_or(ElfError::FailedMemAlloc(size_of::<ElfHeader>()))?;
     file.seek(0).map_err(ElfError::Ext2Error)?;
     file.read(&mut elf_header, size_of::<ElfHeader>())
         .map_err(ElfError::Ext2Error)?;
@@ -181,8 +184,8 @@ macro_rules! impl_load_ph {
                 .seek(offset as usize)
                 .map_err(ElfError::Ext2Error)?;
 
-            let mut buf =
-                Buffer::new(core::mem::size_of::<$elfph>()).ok_or(ElfError::FailedMemAlloc)?;
+            let mut buf = Buffer::new(core::mem::size_of::<$elfph>())
+                .ok_or(ElfError::FailedMemAlloc(core::mem::size_of::<$elfph>()))?;
 
             self.file
                 .read(&mut buf, core::mem::size_of::<$elfph>())

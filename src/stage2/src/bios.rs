@@ -119,7 +119,7 @@ pub struct DiskParams {
 pub enum DiskError {
     OutputBufferTooSmall,
     InvalidDiskParameters,
-    FailedMemAlloc,
+    FailedMemAlloc(usize),
     ReadError(usize),
     ReadParametersError(usize),
 }
@@ -144,8 +144,9 @@ impl DiskError {
                 DiskError::InvalidDiskParameters => {
                     video.write_string(b"invalid disk parameters");
                 }
-                DiskError::FailedMemAlloc => {
-                    video.write_string(b"failed to allocate memory");
+                DiskError::FailedMemAlloc(size) => {
+                    video.write_string(b"failed to allocate memory: 0x");
+                    video.write_hex_u32(*size as u32);
                 }
             }
             video.write_char(b'\n');
@@ -331,7 +332,7 @@ impl ExtendedDisk {
             return Err(DiskError::InvalidDiskParameters);
         }
         let sector_count = buffer.len() / bps;
-        let mut sector_buffer = Buffer::new(bps).ok_or(DiskError::FailedMemAlloc)?;
+        let mut sector_buffer = Buffer::new(bps).ok_or(DiskError::FailedMemAlloc(bps))?;
         for i in 0..sector_count {
             let begin = i * bps;
             let end = (i + 1) * bps;

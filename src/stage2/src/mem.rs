@@ -323,6 +323,7 @@ pub fn get_last_header() -> u32 {
 fn mem_alloc<T>(size: usize) -> Option<*mut T> {
     let header_size = size_of::<MemoryBlock>();
     let mut header = get_first_header();
+
     loop {
         let mut header_v = unsafe { header.read_unaligned() };
         if header_v.free != 0 && header_v.size >= size {
@@ -332,7 +333,7 @@ fn mem_alloc<T>(size: usize) -> Option<*mut T> {
             }
             // Split the header
             let header_end = (header as usize) + header_v.size;
-            let desired_end = (header as usize) + size;
+            let desired_end = (header as usize) + size + header_size;
             let mut next_header = (desired_end & !(0x1000 - 1)) + 0x1000 - header_size;
             while next_header <= desired_end {
                 next_header += 0x1000;

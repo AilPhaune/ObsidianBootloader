@@ -166,12 +166,12 @@ pub enum Ext2Error {
     UnsupportedInodeType(u16),
     BadBlockSize(usize, u16),
     BadDiskSectorSize(u16),
+    FailedMemAlloc(usize),
     DiskError(DiskError),
     BadInodeIndex(usize),
     DirectoryParseFailed,
     InvalidArgument,
     BufferCopyError,
-    FailedMemAlloc,
     NullBlockSize,
     BadSuperblock,
     NullPointer,
@@ -183,8 +183,10 @@ impl Ext2Error {
         unsafe {
             let video = Video::get();
             match self {
-                Ext2Error::FailedMemAlloc => {
-                    video.write_string(b"Failed to allocate memory\n");
+                Ext2Error::FailedMemAlloc(size) => {
+                    video.write_string(b"Failed to allocate memory: 0x");
+                    video.write_hex_u32(*size as u32);
+                    video.write_char(b'\n');
                 }
                 Ext2Error::BadDiskSectorSize(s) => {
                     video.write_string(b"Bad disk sector size: 0x");
@@ -399,9 +401,9 @@ impl CachedInodeReadingLocation {
         }
         let location =
             InodeReadingLocation::new(ext2.block_size() / 4, 0).ok_or(Ext2Error::NullBlockSize)?;
-        let table1 = Buffer::new(size).ok_or(Ext2Error::FailedMemAlloc)?;
-        let table2 = Buffer::new(size).ok_or(Ext2Error::FailedMemAlloc)?;
-        let table3 = Buffer::new(size).ok_or(Ext2Error::FailedMemAlloc)?;
+        let table1 = Buffer::new(size).ok_or(Ext2Error::FailedMemAlloc(size))?;
+        let table2 = Buffer::new(size).ok_or(Ext2Error::FailedMemAlloc(size))?;
+        let table3 = Buffer::new(size).ok_or(Ext2Error::FailedMemAlloc(size))?;
 
         let max_block = (inode.size_lo as usize) / size;
 
@@ -599,7 +601,7 @@ impl<'a> Ext2File<'a> {
         let mut value = Self {
             fd,
             ext2,
-            block_buffer: Buffer::new(bs).ok_or(Ext2Error::FailedMemAlloc)?,
+            block_buffer: Buffer::new(bs).ok_or(Ext2Error::FailedMemAlloc(bs))?,
             cached_buffer_block: 0,
             cached_buffer_size: 0,
             curr_offset: 0,
@@ -673,7 +675,7 @@ impl<'a> Ext2File<'a> {
 
     pub fn read_all(&mut self) -> Result<Buffer, Ext2Error> {
         let len = self.fd.inode.size_lo as usize;
-        let mut buffer = Buffer::new(len).ok_or(Ext2Error::FailedMemAlloc)?;
+        let mut buffer = Buffer::new(len).ok_or(Ext2Error::FailedMemAlloc(len))?;
         self.read(&mut buffer, len)?;
         Ok(buffer)
     }
@@ -744,10 +746,10 @@ impl<'a> Ext2Directory<'a> {
             parent_entry: 0,
         };
         // Allocate buffers
-        let mut buffer =
-            Buffer::new(dir.fd.inode.size_lo as usize).ok_or(Ext2Error::FailedMemAlloc)?;
-        let mut block_buffer =
-            Buffer::new(dir.ext2.block_size()).ok_or(Ext2Error::FailedMemAlloc)?;
+        let mut buffer = Buffer::new(dir.fd.inode.size_lo as usize)
+            .ok_or(Ext2Error::FailedMemAlloc(dir.fd.inode.size_lo as usize))?;
+        let mut block_buffer = Buffer::new(dir.ext2.block_size())
+            .ok_or(Ext2Error::FailedMemAlloc(dir.ext2.block_size()))?;
 
         // Read content
         let mut idx = 0;
@@ -777,7 +779,8 @@ impl<'a> Ext2Directory<'a> {
 
             let mut entry = Ext2DirectoryEntry {
                 inode: entry_raw.inode,
-                name: Buffer::new(name_entry_len).ok_or(Ext2Error::FailedMemAlloc)?,
+                name: Buffer::new(name_entry_len)
+                    .ok_or(Ext2Error::FailedMemAlloc(name_entry_len))?,
             };
             if !buffer.copy_to(
                 idx + size_of::<Ext2DirectoryEntryrRaw>(),
@@ -859,8 +862,8 @@ impl Ext2FileSystem {
         }
         self.sector_size = bps;
 
-        let mut superblock_buffer = Buffer::new(1024).ok_or(Ext2Error::FailedMemAlloc)?;
-        let mut buffer = Buffer::new(4096).ok_or(Ext2Error::FailedMemAlloc)?;
+        let mut superblock_buffer = Buffer::new(1024).ok_or(Ext2Error::FailedMemAlloc(1024))?;
+        let mut buffer = Buffer::new(4096).ok_or(Ext2Error::FailedMemAlloc(4096))?;
 
         // For dev profile, low optimization doesn't recognize that bps is not 0 from the first !=512 && !=4096 check
         // Gets optimized out on release profile, and removes undefined panick symbols related to division by 0 on dev profile
@@ -897,8 +900,8 @@ impl Ext2FileSystem {
         if bs == 0 {
             return Err(Ext2Error::NullBlockSize);
         }
-        let mut buffer = Buffer::new(table_size).ok_or(Ext2Error::FailedMemAlloc)?;
-        let mut block_buffer = Buffer::new(bs).ok_or(Ext2Error::FailedMemAlloc)?;
+        let mut buffer = Buffer::new(table_size).ok_or(Ext2Error::FailedMemAlloc(table_size))?;
+        let mut block_buffer = Buffer::new(bs).ok_or(Ext2Error::FailedMemAlloc(bs))?;
 
         let mut read = 0;
         let mut disk_byte = if bs == 1024 { 2048 } else { bs };
@@ -910,7 +913,7 @@ impl Ext2FileSystem {
 
             self.read_block(disk_block as u64, &mut block_buffer)?;
             if !block_buffer.copy_to(block_offset, &mut buffer, read, to_copy) {
-                return Err(Ext2Error::FailedMemAlloc);
+                return Err(Ext2Error::BufferCopyError);
             }
 
             read += to_copy;
@@ -1019,8 +1022,9 @@ impl Ext2FileSystem {
         let block_offset = (index / inodes_per_block) as u64;
 
         let offset = (index % inodes_per_block) * inode_size;
-        let mut block_buffer = Buffer::new(block_size).ok_or(Ext2Error::FailedMemAlloc)?;
-        let mut buffer = Buffer::new(inode_size).ok_or(Ext2Error::FailedMemAlloc)?;
+        let mut block_buffer =
+            Buffer::new(block_size).ok_or(Ext2Error::FailedMemAlloc(block_size))?;
+        let mut buffer = Buffer::new(inode_size).ok_or(Ext2Error::FailedMemAlloc(inode_size))?;
 
         unsafe {
             self.read_block(block + block_offset, &mut block_buffer)?;

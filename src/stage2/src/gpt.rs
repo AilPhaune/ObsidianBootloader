@@ -106,7 +106,7 @@ pub struct DiskRange {
 }
 
 pub enum GPTError {
-    FailedMemAlloc,
+    FailedMemAlloc(usize),
     BadSectorSize,
     BadMasterBootRecord,
     NotGPT,
@@ -123,8 +123,10 @@ impl GPTError {
                     video.write_string(b"GUID Partition Table reading error caused by:\n");
                     e.panic();
                 }
-                GPTError::FailedMemAlloc => {
-                    video.write_string(b"Failed to allocate memory\n");
+                GPTError::FailedMemAlloc(size) => {
+                    video.write_string(b"Failed to allocate memory: 0x");
+                    video.write_hex_u32(*size as u32);
+                    video.write_char(b'\n');
                 }
                 GPTError::BadSectorSize => {
                     video.write_string(b"Bad disk sector size\n");
@@ -155,8 +157,9 @@ impl GUIDPartitionTable {
 
         let max_lba = disk_params.sectors - 1;
 
-        let mut buffer = Buffer::new(34 * 512).ok_or(GPTError::FailedMemAlloc)?; // 34 logical 512-byte sectors
-        let mut sector_buffer = Buffer::new(sector_size).ok_or(GPTError::FailedMemAlloc)?; // 1 physiqual sector
+        let mut buffer = Buffer::new(34 * 512).ok_or(GPTError::FailedMemAlloc(34 * 512))?; // 34 logical 512-byte sectors
+        let mut sector_buffer =
+            Buffer::new(sector_size).ok_or(GPTError::FailedMemAlloc(sector_size))?; // 1 physiqual sector
 
         let mut read = 0;
         let mut lba = 0;
@@ -225,7 +228,7 @@ impl GUIDPartitionTable {
                     continue;
                 }
 
-                let name = Buffer::new(name_size).ok_or(GPTError::FailedMemAlloc)?;
+                let name = Buffer::new(name_size).ok_or(GPTError::FailedMemAlloc(name_size))?;
                 (entry, name)
             };
 

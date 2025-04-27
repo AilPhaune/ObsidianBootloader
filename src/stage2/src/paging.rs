@@ -350,7 +350,15 @@ fn load_kernel<'a>(
             continue;
         }
 
-        let mut buf = Buffer::new(ph.p_memsz as usize).ok_or(ElfError::FailedMemAlloc)?;
+        printf!(
+            b"Loading segment: v_addr=0x%x%x, p_memsz=0x%x, p_filesz=0x%x\r\n",
+            (ph.p_vaddr >> 32) as u32,
+            ph.p_vaddr as u32,
+            ph.p_memsz as u32,
+            ph.p_filesz as u32
+        );
+        let mut buf = Buffer::new(ph.p_memsz as usize)
+            .ok_or(ElfError::FailedMemAlloc(ph.p_memsz as usize))?;
         unsafe { buf.get_ptr().write_bytes(0, ph.p_memsz as usize) };
 
         let read = {
@@ -359,13 +367,13 @@ fn load_kernel<'a>(
             file.read(&mut buf, ph.p_filesz as usize)
                 .map_err(ElfError::Ext2Error)?
         };
+        printf!(
+            b"Read 0x%x bytes of 0x%x bytes\r\n",
+            read,
+            ph.p_filesz as usize
+        );
 
         if read != ph.p_filesz as usize {
-            printf!(
-                b"Read 0x%x bytes of 0x%x bytes\r\n",
-                read,
-                ph.p_filesz as usize
-            );
             unsafe {
                 Video::get().write_string(b"Failed to boot: Could not read kernel !\n");
             }
@@ -410,7 +418,8 @@ fn load_kernel<'a>(
     let begin_stack = 0xFFFF_9000_0000_0000;
     let end_stack = begin_stack + KERNEL_STACK_SIZE;
 
-    let stack_buffer = Buffer::new(KERNEL_STACK_SIZE as usize).ok_or(ElfError::FailedMemAlloc)?;
+    let stack_buffer = Buffer::new(KERNEL_STACK_SIZE as usize)
+        .ok_or(ElfError::FailedMemAlloc(KERNEL_STACK_SIZE as usize))?;
 
     unsafe {
         printf!(
