@@ -13,6 +13,8 @@ unsafe fn check_and_enable_fpu() -> bool {
     let cr0 = (cr0 & !(1 << 2)) | (1 << 1);
     asm!("mov cr0, {}", in(reg) cr0);
 
+    asm!("fninit");
+
     true
 }
 
