@@ -15,6 +15,7 @@ pub mod gpt;
 pub mod io;
 pub mod mem;
 pub mod paging;
+pub mod vesa;
 pub mod video;
 
 pub mod eflags {
@@ -62,6 +63,7 @@ use gdt::{is_cpuid_supported, is_long_mode_supported};
 use gpt::{GUIDPartitionTable, PARTITION_GUID_TYPE_LINUX_FS};
 use mem::{detect_system_memory, get_mem_free, get_mem_total, get_mem_used};
 use paging::enable_paging_and_run_kernel;
+use vesa::switch_to_graphics;
 
 use crate::video::{Color, Video};
 
@@ -316,6 +318,7 @@ pub extern "cdecl" fn rust_entry(bios_idt: usize, boot_drive: usize) -> ! {
             }
         };
 
+        switch_to_graphics(bios_idt);
         enable_paging_and_run_kernel(&mut kernel_file);
 
         #[allow(clippy::empty_loop)]

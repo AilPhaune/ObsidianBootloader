@@ -212,8 +212,8 @@ impl ExtendedDisk {
                 0,
                 seg as usize,
                 seg as usize,
-                0,
-                0,
+                seg as usize,
+                seg as usize,
             ) as *const BiosInterruptResult;
 
             if ((*result).eflags & eflags::CF) != 0 {
@@ -263,8 +263,8 @@ impl ExtendedDisk {
                 0,
                 dap_seg as usize,
                 dap_seg as usize,
-                0,
-                0,
+                dap_seg as usize,
+                dap_seg as usize,
             ) as *const BiosInterruptResult;
 
             if ((*result).eflags & eflags::CF) != 0 {
@@ -310,8 +310,8 @@ impl ExtendedDisk {
                 0,
                 dap_seg as usize,
                 dap_seg as usize,
-                0,
-                0,
+                dap_seg as usize,
+                dap_seg as usize,
             ) as *const BiosInterruptResult;
 
             if ((*result).eflags & eflags::CF) != 0 {

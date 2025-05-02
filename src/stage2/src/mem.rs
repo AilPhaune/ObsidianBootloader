@@ -84,8 +84,8 @@ pub fn detect_system_memory(bios_idt: usize) -> Result<(), u8> {
                 off as usize,
                 seg as usize,
                 seg as usize,
-                0,
-                0,
+                seg as usize,
+                seg as usize,
             ) as *const BiosInterruptResult;
 
             if ((*result).eflags & eflags::CF) != 0 {
