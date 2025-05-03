@@ -6,15 +6,7 @@ addr_64:
 sp_64:
     .lo: dd 0
     .hi: dd 0
-memory_layout_ptr:
-    dd 0
-memory_layout_entries:
-    dd 0
-page_allocator_ptr:
-    dd 0
-page_allocator_end:
-    dd 0
-begin_usable_memory:
+obsiboot_ptr:
     dd 0
 
 GLOBAL enable_paging_and_jump64
@@ -62,20 +54,8 @@ enable_paging_and_jump64:
     mov eax, [esp + 28] ; stack pointer hi
     mov [sp_64.hi], eax
 
-    mov eax, [esp + 32] ; memory layout pointer
-    mov [memory_layout_ptr], eax
-
-    mov eax, [esp + 36] ; memory layout entries count
-    mov [memory_layout_entries], eax
-
-    mov eax, [esp + 40] ; Page allocator current pointer
-    mov [page_allocator_ptr], eax
-
-    mov eax, [esp + 44] ; Page allocator end pointer
-    mov [page_allocator_end], eax
-
-    mov eax, [esp + 48] ; begin usable memory
-    mov [begin_usable_memory], eax
+    mov eax, [esp + 32] ; obsiboot pointer
+    mov [obsiboot_ptr], eax
 
     mov eax, [esp + 12] ; 64-bit code selector
     push eax
@@ -89,23 +69,8 @@ enable_paging_and_jump64:
     ; Arguments
     xor rax, rax
     
-    mov eax, [memory_layout_ptr]
+    mov eax, [obsiboot_ptr]
     mov rdi, rax
-
-    mov eax, [memory_layout_entries]
-    mov rsi, rax
-
-    mov rax, cr3
-    mov rdx, rax
-
-    mov eax, [page_allocator_ptr]
-    mov rcx, rax
-
-    mov eax, [page_allocator_end]
-    mov r8, rax
-
-    mov eax, [begin_usable_memory]
-    mov r9, rax
 
     ; Call 64-bit kernel entry
     mov rbx, [addr_64]

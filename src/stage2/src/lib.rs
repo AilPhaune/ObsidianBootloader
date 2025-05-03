@@ -14,6 +14,7 @@ pub mod gdt;
 pub mod gpt;
 pub mod io;
 pub mod mem;
+pub mod obsiboot;
 pub mod paging;
 pub mod vesa;
 pub mod video;
@@ -319,7 +320,7 @@ pub extern "cdecl" fn rust_entry(bios_idt: usize, boot_drive: usize) -> ! {
         };
 
         switch_to_graphics(bios_idt);
-        enable_paging_and_run_kernel(&mut kernel_file);
+        enable_paging_and_run_kernel(&mut kernel_file, bios_idt, boot_drive);
 
         #[allow(clippy::empty_loop)]
         loop {}

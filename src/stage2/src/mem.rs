@@ -845,6 +845,14 @@ impl Buffer {
         })
     }
 
+    pub const fn null() -> Self {
+        Self {
+            ptr: ptr::null_mut(),
+            len: 0,
+            owns_data: false,
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.len
     }

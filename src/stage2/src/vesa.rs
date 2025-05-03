@@ -4,7 +4,7 @@ use crate::{
     bios::{unsafe_call_bios_interrupt, BiosInterruptResult},
     e9::write_char,
     kpanic,
-    mem::memset,
+    mem::{memset, Buffer},
     printf, ptr_to_seg_off, seg_off_to_ptr,
     video::Video,
 };
@@ -21,6 +21,7 @@ pub struct VbeInfoBlock {
 }
 
 #[repr(C, packed)]
+#[derive(Clone)]
 pub struct VesaModeInfoStructure {
     pub attributes: u16,
     pub window_a: u8,
@@ -73,9 +74,10 @@ struct BestMode {
 static mut VESA_INFO: VesaContainer = VesaContainer([0; 512]);
 static mut VESA_MODE_INFO: VesaContainerSmall = VesaContainerSmall([0; 256]);
 
+static mut MODES_BUFFER: Buffer = Buffer::null();
+
 const MESSAGE: &[u8] = b"Failed to switch to graphics mode !\r\n";
 
-#[no_mangle]
 pub fn switch_to_graphics(bios_idt: usize) {
     unsafe {
         let info = &*(addr_of!(VESA_INFO.0) as *const VbeInfoBlock);
@@ -142,6 +144,23 @@ pub fn switch_to_graphics(bios_idt: usize) {
         let (seg, off) = ptr_to_seg_off(addr_of!(VESA_MODE_INFO.0) as usize);
         printf!(b"Mode info ptr=%x:%x\r\n", seg, off);
 
+        let mode_count = {
+            let mut i = 0;
+            while *ptr.add(i) != 0xFFFF {
+                i += 1;
+            }
+            i
+        };
+        MODES_BUFFER = Buffer::new(mode_count * 256).unwrap_or_else(|| {
+            printf!(
+                b"Failed to allocate 0x%x bytes of memory for VESA modes buffer\r\n",
+                mode_count * 256
+            );
+            Video::get().write_string(MESSAGE);
+            kpanic();
+        });
+
+        let mut i = 0;
         loop {
             let mode = *ptr;
             if mode == 0xFFFF {
@@ -163,6 +182,11 @@ pub fn switch_to_graphics(bios_idt: usize) {
                 seg as usize,
             ) as *const BiosInterruptResult;
             ptr = ptr.add(1);
+
+            #[allow(static_mut_refs)]
+            let mode_ptr = MODES_BUFFER.get_ptr() as *mut VesaModeInfoStructure;
+            *mode_ptr.add(i) = mode_info.clone();
+            i += 1;
 
             if ((*res).eax & 0xFFFF) != 0x4F {
                 // Error/unsupported mode
@@ -263,5 +287,16 @@ pub fn switch_to_graphics(bios_idt: usize) {
             0,
             bestmode.width * bestmode.height * (bestmode.bpp as usize / 8),
         );
+    }
+}
+
+#[allow(static_mut_refs)]
+pub fn get_vbe_boot_info() -> (u32, u32, u32) {
+    unsafe {
+        let vbe_info_block_ptr = VESA_INFO.0.as_ptr() as u32;
+        let vbe_modes_info_ptr = MODES_BUFFER.get_ptr() as u32;
+        let vbe_mode_count = MODES_BUFFER.len() as u32 / 256;
+
+        (vbe_info_block_ptr, vbe_modes_info_ptr, vbe_mode_count)
     }
 }

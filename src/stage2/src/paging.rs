@@ -6,7 +6,9 @@ use crate::{
     gdt::{init_gdtr, CODE64_SELECTOR, DATA64_SELECTOR},
     kpanic,
     mem::{self, Buffer, Vec, RANGE_TYPE_AVAILABLE, SYSTEM_MEMORY_MAP, USED_MAP},
+    obsiboot::ObsiBootKernelParameters,
     printf,
+    vesa::get_vbe_boot_info,
     video::Video,
 };
 
@@ -17,11 +19,7 @@ extern "cdecl" {
         code_selector: usize,
         entry64: u64,
         stack_pointer: u64,
-        memory_layout: usize,
-        memory_layout_entry_count: usize,
-        page_alloc_curr: usize,
-        page_alloc_end: usize,
-        begin_usable_memory: usize,
+        obsiboot_kernel_parameters: usize,
     ) -> !;
 }
 
@@ -448,7 +446,15 @@ fn load_kernel<'a>(
 
 pub const DIRECT_MAPPING_OFFSET: u64 = 0xFFFF_A000_0000_0000;
 
-pub fn enable_paging_and_run_kernel<'a>(kernel_file: &'a mut ElfFile64<'a>) {
+const BOOTLOADER_NAME: &[u8] =
+    b"Obsidian Bootloader: https://github.com/AilPhaune/ObsidianBootloader/\0";
+static mut OBSIBOOT: ObsiBootKernelParameters = ObsiBootKernelParameters::empty();
+
+pub fn enable_paging_and_run_kernel<'a>(
+    kernel_file: &'a mut ElfFile64<'a>,
+    bios_idt: usize,
+    boot_drive: usize,
+) {
     unsafe {
         let entry64 = kernel_file.entry_point();
         printf!(
@@ -605,6 +611,31 @@ pub fn enable_paging_and_run_kernel<'a>(kernel_file: &'a mut ElfFile64<'a>) {
             PML4 as u32
         );
 
+        let (vbe_info_block_ptr, vbe_modes_info_ptr, vbe_mode_info_block_entry_count) =
+            get_vbe_boot_info();
+        OBSIBOOT = ObsiBootKernelParameters {
+            obsiboot_struct_size: size_of::<ObsiBootKernelParameters>() as u32,
+            obsiboot_struct_version: 1,
+            obsiboot_struct_checksum: [0; 8],
+            bootloader_name_ptr: BOOTLOADER_NAME.as_ptr() as u32,
+            bootloader_version: [1, 0, 0, 0],
+            bios_boot_drive: boot_drive as u32,
+            bios_idt_ptr: bios_idt as u32,
+            ptr_to_memory_layout: addr_of!(KERNEL_MEMORY_LAYOUT) as u32,
+            memory_layout_entry_count: num_memory_regions as u32,
+            memory_layout_entry_size: size_of::<OsMemoryRegion>() as u32,
+            page_tables_page_allocator_current_free_page: allocator.current as u32,
+            page_tables_page_allocator_last_usable_page: allocator.end as u32,
+            pml4_base_address: PML4 as u32,
+            usable_kernel_memory_start: mem::get_last_header(),
+            vbe_info_block_ptr,
+            vbe_modes_info_ptr,
+            vbe_mode_info_block_entry_count,
+        };
+        #[allow(static_mut_refs)]
+        let checksum = OBSIBOOT.calculate_checksum();
+        OBSIBOOT.obsiboot_struct_checksum = checksum;
+
         init_gdtr();
         printf!(b"\r\nJumping to kernel.\r\n\n\n");
         enable_paging_and_jump64(
@@ -613,11 +644,7 @@ pub fn enable_paging_and_run_kernel<'a>(kernel_file: &'a mut ElfFile64<'a>) {
             CODE64_SELECTOR,
             entry64,
             stack_end,
-            addr_of!(KERNEL_MEMORY_LAYOUT) as usize,
-            num_memory_regions,
-            allocator.current,
-            allocator.end,
-            mem::get_last_header() as usize,
+            addr_of!(OBSIBOOT) as usize,
         );
     }
 }
