@@ -2,7 +2,7 @@
 #![no_main]
 #![feature(sync_unsafe_cell)]
 #![feature(optimize_attribute)]
-#![feature(naked_functions)]
+#![feature(int_from_ascii)]
 
 pub mod arith;
 pub mod bios;
@@ -63,6 +63,7 @@ use fs::{Ext2FileSystem, Ext2FileType};
 use gdt::{is_cpuid_supported, is_long_mode_supported};
 use gpt::{GUIDPartitionTable, PARTITION_GUID_TYPE_LINUX_FS};
 use mem::{detect_system_memory, get_mem_free, get_mem_total, get_mem_used};
+use obsiboot::ObsiBootConfig;
 use paging::enable_paging_and_run_kernel;
 use vesa::switch_to_graphics;
 
@@ -287,6 +288,29 @@ pub extern "cdecl" fn rust_entry(bios_idt: usize, boot_drive: usize) -> ! {
         }
         printf!(b"Done.\r\n\n");
 
+        let config_file = match ext2
+            .find_inode(b"/obsiboot.conf")
+            .unwrap_or_else(|e| e.panic())
+        {
+            None => ObsiBootConfig::empty(),
+            Some(inode) => {
+                printf!(
+                    b"Found obsiboot config at /obsiboot.conf, inode 0x%x\r\n",
+                    inode
+                );
+                match ext2.open(inode).unwrap_or_else(|e| e.panic()) {
+                    Ext2FileType::File(mut file) => {
+                        let contents = file.read_all().unwrap_or_else(|e| e.panic());
+                        ObsiBootConfig::parse(&contents)
+                    }
+                    _ => {
+                        printf!(b"/obsiboot.conf is not a file !\r\n");
+                        ObsiBootConfig::empty()
+                    }
+                }
+            }
+        };
+
         let mut kernel_file = match ext2
             .find_inode(b"/kernel64.elf")
             .unwrap_or_else(|e| e.panic())
@@ -319,7 +343,7 @@ pub extern "cdecl" fn rust_entry(bios_idt: usize, boot_drive: usize) -> ! {
             }
         };
 
-        switch_to_graphics(bios_idt);
+        switch_to_graphics(bios_idt, &config_file);
         enable_paging_and_run_kernel(&mut kernel_file, bios_idt, boot_drive);
 
         #[allow(clippy::empty_loop)]

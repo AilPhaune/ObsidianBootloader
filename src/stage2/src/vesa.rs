@@ -5,6 +5,7 @@ use crate::{
     e9::write_char,
     kpanic,
     mem::{memset, Buffer},
+    obsiboot::{ObsiBootConfig, ObsiBootConfigVbeMode},
     printf, ptr_to_seg_off, seg_off_to_ptr,
     video::Video,
 };
@@ -75,10 +76,17 @@ static mut VESA_INFO: VesaContainer = VesaContainer([0; 512]);
 static mut VESA_MODE_INFO: VesaContainerSmall = VesaContainerSmall([0; 256]);
 
 static mut MODES_BUFFER: Buffer = Buffer::null();
+static mut BESTMODE: BestMode = BestMode {
+    mode: 0,
+    width: 0,
+    height: 0,
+    bpp: 0,
+    framebuffer: 0,
+};
 
 const MESSAGE: &[u8] = b"Failed to switch to graphics mode !\r\n";
 
-pub fn switch_to_graphics(bios_idt: usize) {
+pub fn switch_to_graphics(bios_idt: usize, config: &ObsiBootConfig) {
     unsafe {
         let info = &*(addr_of!(VESA_INFO.0) as *const VbeInfoBlock);
         let (seg, off) = ptr_to_seg_off(addr_of!(VESA_INFO.0) as usize);
@@ -188,6 +196,47 @@ pub fn switch_to_graphics(bios_idt: usize) {
             *mode_ptr.add(i) = mode_info.clone();
             i += 1;
 
+            match config.vbe_mode {
+                Some(ObsiBootConfigVbeMode::ModeNumber(m)) => {
+                    printf!(b"m=%x, mode=%x\r\n", m, mode);
+                    if bestmode.mode == m {
+                        // Mode already selected
+                        printf!(b"ALREADY SELECTED\r\n");
+                        continue;
+                    }
+                    if mode == m {
+                        printf!(b"SELECTING\r\n");
+                        bestmode.mode = mode;
+                        bestmode.width = mode_info.width as usize;
+                        bestmode.height = mode_info.height as usize;
+                        bestmode.bpp = mode_info.bpp;
+                        bestmode.framebuffer = mode_info.framebuffer;
+                        continue;
+                    }
+                }
+                Some(ObsiBootConfigVbeMode::ModeInfo { width, height, bpp }) => {
+                    if bestmode.width == width as usize
+                        && bestmode.height == height as usize
+                        && bestmode.bpp == bpp
+                    {
+                        // Mode already selected
+                        continue;
+                    }
+                    if mode_info.width == width
+                        && mode_info.height == height
+                        && mode_info.bpp == bpp
+                    {
+                        bestmode.mode = mode;
+                        bestmode.width = mode_info.width as usize;
+                        bestmode.height = mode_info.height as usize;
+                        bestmode.bpp = mode_info.bpp;
+                        bestmode.framebuffer = mode_info.framebuffer;
+                        continue;
+                    }
+                }
+                None => {}
+            }
+
             if ((*res).eax & 0xFFFF) != 0x4F {
                 // Error/unsupported mode
                 continue;
@@ -287,16 +336,24 @@ pub fn switch_to_graphics(bios_idt: usize) {
             0,
             bestmode.width * bestmode.height * (bestmode.bpp as usize / 8),
         );
+
+        BESTMODE = bestmode;
     }
 }
 
 #[allow(static_mut_refs)]
-pub fn get_vbe_boot_info() -> (u32, u32, u32) {
+pub fn get_vbe_boot_info() -> (u32, u32, u32, u32) {
     unsafe {
         let vbe_info_block_ptr = VESA_INFO.0.as_ptr() as u32;
         let vbe_modes_info_ptr = MODES_BUFFER.get_ptr() as u32;
         let vbe_mode_count = MODES_BUFFER.len() as u32 / 256;
+        let vbe_selected_mode = BESTMODE.mode as u32;
 
-        (vbe_info_block_ptr, vbe_modes_info_ptr, vbe_mode_count)
+        (
+            vbe_info_block_ptr,
+            vbe_modes_info_ptr,
+            vbe_mode_count,
+            vbe_selected_mode,
+        )
     }
 }

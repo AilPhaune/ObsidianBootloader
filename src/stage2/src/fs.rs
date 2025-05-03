@@ -1081,16 +1081,17 @@ impl Ext2FileSystem {
         }
 
         let mut inode = 2;
-        for part in parts {
+        'outer: for part in parts {
             let file = self.open(inode)?;
             match file {
                 Ext2FileType::Directory(dir) => {
                     for entry in dir.listdir() {
                         if entry.name == *part {
                             inode = entry.inode as usize;
-                            break;
+                            continue 'outer;
                         }
                     }
+                    return Ok(None);
                 }
                 _ => {
                     return Err(Ext2Error::NotFound);

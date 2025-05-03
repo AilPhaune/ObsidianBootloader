@@ -1,6 +1,6 @@
 use core::{
     ops::{Deref, DerefMut},
-    ptr,
+    ptr, slice,
 };
 
 use crate::{
@@ -949,6 +949,19 @@ impl PartialEq<Buffer> for [u8] {
     fn eq(&self, other: &Buffer) -> bool {
         self.len() == other.len
             && unsafe { memcmp(self.as_ptr() as usize, other.ptr as usize, self.len()) == 0 }
+    }
+}
+
+impl Deref for Buffer {
+    type Target = [u8];
+    fn deref(&self) -> &Self::Target {
+        unsafe { slice::from_raw_parts(self.ptr, self.len) }
+    }
+}
+
+impl DerefMut for Buffer {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { slice::from_raw_parts_mut(self.ptr, self.len) }
     }
 }
 

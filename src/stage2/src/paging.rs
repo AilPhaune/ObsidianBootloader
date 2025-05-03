@@ -611,8 +611,12 @@ pub fn enable_paging_and_run_kernel<'a>(
             PML4 as u32
         );
 
-        let (vbe_info_block_ptr, vbe_modes_info_ptr, vbe_mode_info_block_entry_count) =
-            get_vbe_boot_info();
+        let (
+            vbe_info_block_ptr,
+            vbe_modes_info_ptr,
+            vbe_mode_info_block_entry_count,
+            vbe_selected_mode,
+        ) = get_vbe_boot_info();
         OBSIBOOT = ObsiBootKernelParameters {
             obsiboot_struct_size: size_of::<ObsiBootKernelParameters>() as u32,
             obsiboot_struct_version: 1,
@@ -631,6 +635,7 @@ pub fn enable_paging_and_run_kernel<'a>(
             vbe_info_block_ptr,
             vbe_modes_info_ptr,
             vbe_mode_info_block_entry_count,
+            vbe_selected_mode,
         };
         #[allow(static_mut_refs)]
         let checksum = OBSIBOOT.calculate_checksum();

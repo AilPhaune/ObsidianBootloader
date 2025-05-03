@@ -1,3 +1,5 @@
+use crate::{e9::write_string, kpanic, printf};
+
 /// # ObsiBoot Kernel Parameters
 /// Contains information about the bootloader and the system
 /// Documentation for ObsiBoot struct version 1.
@@ -65,6 +67,8 @@ pub struct ObsiBootKernelParameters {
     /// The number of entries in the [`VesaModeInfoStructure`]s list <br>
     /// Note: Each entry is 256 bytes <br>
     pub vbe_mode_info_block_entry_count: u32,
+    /// The selected VESA mode <br>
+    pub vbe_selected_mode: u32,
 }
 
 impl ObsiBootKernelParameters {
@@ -127,6 +131,107 @@ impl ObsiBootKernelParameters {
             vbe_info_block_ptr: 0,
             vbe_modes_info_ptr: 0,
             vbe_mode_info_block_entry_count: 0,
+            vbe_selected_mode: 0,
         }
+    }
+}
+
+pub enum ObsiBootConfigVbeMode {
+    ModeNumber(u16),
+    ModeInfo { width: u16, height: u16, bpp: u8 },
+}
+
+pub struct ObsiBootConfig {
+    pub vbe_mode: Option<ObsiBootConfigVbeMode>,
+}
+
+impl ObsiBootConfig {
+    pub const fn empty() -> Self {
+        Self { vbe_mode: None }
+    }
+
+    pub fn parse(data: &[u8]) -> Self {
+        let mut config = Self::empty();
+        let mut i = 0;
+        fn eol(data: &[u8], i: usize) -> usize {
+            let Some(slice) = data.get(i..) else {
+                return data.len();
+            };
+            for (j, d) in slice.iter().enumerate() {
+                if *d == b'\n' {
+                    return i + j;
+                }
+            }
+            data.len()
+        }
+        fn is_key(data: &[u8], i: usize, key: &[u8]) -> bool {
+            if let Some(slice) = data.get(i..(i + key.len())) {
+                for (j, d) in slice.iter().enumerate() {
+                    if Some(d) != key.get(j) {
+                        return false;
+                    }
+                }
+                true
+            } else {
+                false
+            }
+        }
+        loop {
+            if i >= data.len() {
+                break;
+            }
+            if data.get(i) == Some(&b'#') {
+                while let Some(c) = data.get(i) {
+                    if *c == b'\n' {
+                        break;
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+            if data.get(i) == Some(&b'\n') {
+                i += 1;
+                continue;
+            }
+
+            if is_key(data, i, b"vbe_mode=") {
+                i += 9;
+                let j = eol(data, i);
+                let Some(value) = data.get(i..j) else {
+                    i = j;
+                    continue;
+                };
+                i = j;
+                let Ok(mode_num) = u16::from_ascii(value) else {
+                    // Parse as `width`x`height`:`bpp`
+                    let Some(idx_x) = value.iter().enumerate().find(|(_, c)| **c == b'x') else {
+                        continue;
+                    };
+                    let Some(idx_c) = value.iter().enumerate().find(|(_, c)| **c == b':') else {
+                        continue;
+                    };
+
+                    let width_slice = value.get(0..idx_x.0).unwrap_or(b"0");
+                    let width = u16::from_ascii(width_slice).unwrap_or(0);
+
+                    let height_slice = value.get(idx_x.0 + 1..idx_c.0).unwrap_or(b"0");
+                    let height = u16::from_ascii(height_slice).unwrap_or(0);
+
+                    let bpp_slice = value.get(idx_c.0 + 1..).unwrap_or(b"0");
+                    let bpp = u8::from_ascii(bpp_slice).unwrap_or(0);
+
+                    config.vbe_mode = Some(ObsiBootConfigVbeMode::ModeInfo { width, height, bpp });
+                    continue;
+                };
+                config.vbe_mode = Some(ObsiBootConfigVbeMode::ModeNumber(mode_num));
+                continue;
+            }
+
+            printf!(b"Unknown config line: ");
+            write_string(data.get(i..).unwrap_or(b"Error"));
+            printf!(b"\r\n");
+            kpanic();
+        }
+        config
     }
 }
