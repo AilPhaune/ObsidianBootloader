@@ -685,7 +685,8 @@ impl<'a> Ext2File<'a> {
     }
 }
 
-struct Ext2DirectoryEntryrRaw {
+#[repr(C, packed)]
+struct Ext2DirectoryEntryRaw {
     pub inode: u32,
     pub entry_size: u16,
     pub len_lo: u8,
@@ -766,7 +767,7 @@ impl<'a> Ext2Directory<'a> {
         idx = 0;
         while idx < dir.fd.inode.size_lo as usize {
             let entry_raw = unsafe {
-                (buffer.get_ptr().add(idx) as *const Ext2DirectoryEntryrRaw).read_unaligned()
+                (buffer.get_ptr().add(idx) as *const Ext2DirectoryEntryRaw).read_unaligned()
             };
             let name_entry_len = if (dir.ext2.superblock.required_features
                 & REQUIRED_FEATURE_DIRECTORY_ENTRIES_HAVE_TYPE_FIELD)
@@ -783,7 +784,7 @@ impl<'a> Ext2Directory<'a> {
                     .ok_or(Ext2Error::FailedMemAlloc(name_entry_len))?,
             };
             if !buffer.copy_to(
-                idx + size_of::<Ext2DirectoryEntryrRaw>(),
+                idx + size_of::<Ext2DirectoryEntryRaw>(),
                 &mut entry.name,
                 0,
                 name_entry_len,
@@ -798,7 +799,9 @@ impl<'a> Ext2Directory<'a> {
                 dir.parent_entry = dir.entries.len();
             }
 
-            dir.entries.push(entry);
+            if entry.inode != 0 {
+                dir.entries.push(entry);
+            }
 
             idx += entry_raw.entry_size as usize;
         }

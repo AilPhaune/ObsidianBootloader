@@ -159,7 +159,7 @@ impl GUIDPartitionTable {
 
         let mut buffer = Buffer::new(34 * 512).ok_or(GPTError::FailedMemAlloc(34 * 512))?; // 34 logical 512-byte sectors
         let mut sector_buffer =
-            Buffer::new(sector_size).ok_or(GPTError::FailedMemAlloc(sector_size))?; // 1 physiqual sector
+            Buffer::new(sector_size).ok_or(GPTError::FailedMemAlloc(sector_size))?; // 1 physical sector
 
         let mut read = 0;
         let mut lba = 0;
