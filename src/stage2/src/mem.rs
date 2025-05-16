@@ -862,6 +862,10 @@ impl Buffer {
     }
 
     pub fn get(&self, index: usize) -> Option<u8> {
+        if !self.owns_data || self.ptr.is_null() {
+            printf!(b"Buffer does not own data !\n");
+            kpanic();
+        }
         if index >= self.len {
             return None;
         }
@@ -869,6 +873,10 @@ impl Buffer {
     }
 
     pub fn get_mut(&mut self, index: usize) -> Option<&mut u8> {
+        if !self.owns_data || self.ptr.is_null() {
+            printf!(b"Buffer does not own data !\n");
+            kpanic();
+        }
         if index >= self.len {
             return None;
         }
@@ -879,6 +887,10 @@ impl Buffer {
     /// Pointer must be handled safely by the caller
     /// Pointer is invalid after this buffer is dropped
     pub unsafe fn get_ptr(&self) -> *mut u8 {
+        if !self.owns_data || self.ptr.is_null() {
+            printf!(b"Buffer does not own data !\n");
+            kpanic();
+        }
         self.ptr
     }
 
@@ -889,6 +901,14 @@ impl Buffer {
         dst_offset: usize,
         count: usize,
     ) -> bool {
+        if !self.owns_data || self.ptr.is_null() {
+            printf!(b"Buffer does not own data !\n");
+            kpanic();
+        }
+        if !dst.owns_data || dst.ptr.is_null() {
+            printf!(b"Destination buffer does not own data !\n");
+            kpanic();
+        }
         if self.len < src_offset + count || dst.len < dst_offset + count {
             false
         } else {
@@ -900,14 +920,26 @@ impl Buffer {
     }
 
     pub fn iter<'b>(&'b self) -> IterBuffer<'b> {
+        if !self.owns_data || self.ptr.is_null() {
+            printf!(b"Buffer does not own data !\n");
+            kpanic();
+        }
         IterBuffer { vec: self, idx: 0 }
     }
 
     pub fn iter_mut<'a>(&'a mut self) -> IterBufferMut<'a> {
+        if !self.owns_data || self.ptr.is_null() {
+            printf!(b"Buffer does not own data !\n");
+            kpanic();
+        }
         IterBufferMut { vec: self, idx: 0 }
     }
 
     pub fn boxed<T>(mut self) -> Box<T> {
+        if !self.owns_data || self.ptr.is_null() {
+            printf!(b"Buffer does not own data !\n");
+            kpanic();
+        }
         let ptr = self.ptr;
         self.ptr = ptr::null_mut();
         unsafe { Box::from_raw(ptr as *mut T) }
@@ -917,6 +949,8 @@ impl Buffer {
 impl Drop for Buffer {
     fn drop(&mut self) {
         if self.owns_data {
+            self.owns_data = false;
+            self.ptr = ptr::null_mut();
             mem_free(self.ptr);
         }
     }

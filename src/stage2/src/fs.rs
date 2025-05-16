@@ -783,6 +783,7 @@ impl<'a> Ext2Directory<'a> {
                 name: Buffer::new(name_entry_len)
                     .ok_or(Ext2Error::FailedMemAlloc(name_entry_len))?,
             };
+
             if !buffer.copy_to(
                 idx + size_of::<Ext2DirectoryEntryRaw>(),
                 &mut entry.name,
@@ -799,11 +800,11 @@ impl<'a> Ext2Directory<'a> {
                 dir.parent_entry = dir.entries.len();
             }
 
+            idx += entry_raw.entry_size as usize;
             if entry.inode != 0 {
                 dir.entries.push(entry);
+                continue;
             }
-
-            idx += entry_raw.entry_size as usize;
         }
 
         Ok(dir)
@@ -1089,7 +1090,7 @@ impl Ext2FileSystem {
             match file {
                 Ext2FileType::Directory(dir) => {
                     for entry in dir.listdir() {
-                        if entry.name == *part {
+                        if &entry.name == part {
                             inode = entry.inode as usize;
                             continue 'outer;
                         }
