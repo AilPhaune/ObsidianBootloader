@@ -1,5 +1,5 @@
 # Obsidian bootloader
-Obsidian bootloader is a bootloader for the Obsidian operating system.
+Obsidian bootloader is a bootloader for the Campix operating system.
 <br>
 It is not multiboot compliant (yet !).
 
@@ -8,7 +8,7 @@ Obsidian leverages the power of the [Rust](https://www.rust-lang.org/) programmi
 # Goal
 This is my honest attempt at learning Operating System development.
 <br>
-The primary goal of this bootloader is to load the Obsidian kernel.
+The primary goal of this bootloader is to load the Campix kernel.
 <br>
 As an additional challenge to myself, I wanted to make it multiboot compliant. (It is not yet !)
 
