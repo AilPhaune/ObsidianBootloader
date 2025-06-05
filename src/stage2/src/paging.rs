@@ -636,6 +636,7 @@ pub fn enable_paging_and_run_kernel<'a>(
             vbe_modes_info_ptr,
             vbe_mode_info_block_entry_count,
             vbe_selected_mode,
+            kernel_stack_pointer: stack_end,
         };
         #[allow(static_mut_refs)]
         let checksum = OBSIBOOT.calculate_checksum();

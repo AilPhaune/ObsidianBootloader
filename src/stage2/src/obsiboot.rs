@@ -69,6 +69,9 @@ pub struct ObsiBootKernelParameters {
     pub vbe_mode_info_block_entry_count: u32,
     /// The selected VESA mode <br>
     pub vbe_selected_mode: u32,
+
+    /// The initial stack pointer used to load the kernel
+    pub kernel_stack_pointer: u64,
 }
 
 impl ObsiBootKernelParameters {
@@ -132,6 +135,7 @@ impl ObsiBootKernelParameters {
             vbe_modes_info_ptr: 0,
             vbe_mode_info_block_entry_count: 0,
             vbe_selected_mode: 0,
+            kernel_stack_pointer: 0,
         }
     }
 }
