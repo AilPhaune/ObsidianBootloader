@@ -325,7 +325,6 @@ unsafe fn map_page_2mb(virt: u64, phys: u64, flags: u64, allocator: &mut SimpleA
 
 const KERNEL_STACK_SIZE: u64 = 2 * MB2 as u64;
 
-static mut KERNEL_BUFFERS: Option<Vec<Buffer>> = None;
 static mut KERNEL_MEMORY_LAYOUT: [OsMemoryRegion; 32] = unsafe { core::mem::zeroed() };
 
 fn load_kernel<'a>(
@@ -334,8 +333,6 @@ fn load_kernel<'a>(
 ) -> Result<(u64, u64), ElfError> {
     let phs = kernel_file.load_program_headers()?.clone();
     let file = kernel_file.get_file_mut();
-
-    let mut buffers = Vec::new(phs.len());
 
     let mut max_addr = 0;
 
@@ -401,7 +398,9 @@ fn load_kernel<'a>(
             }
         }
 
-        buffers.push(buf);
+        unsafe {
+            buf.leak();
+        }
     }
 
     if max_addr > 0xFFFF_9000_0000_0000 {
@@ -436,12 +435,11 @@ fn load_kernel<'a>(
 
             map_page_2mb(virt, phys, PAGE_RW, allocator);
         }
-        buffers.push(stack_buffer);
 
-        KERNEL_BUFFERS = Some(buffers);
+        stack_buffer.leak();
     }
 
-    Ok((end_stack, end_stack))
+    Ok((begin_stack, end_stack))
 }
 
 pub const DIRECT_MAPPING_OFFSET: u64 = 0xFFFF_A000_0000_0000;

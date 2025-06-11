@@ -944,6 +944,13 @@ impl Buffer {
         self.ptr = ptr::null_mut();
         unsafe { Box::from_raw(ptr as *mut T) }
     }
+
+    /// # Safety
+    /// Memory will not be freed on drop
+    pub unsafe fn leak(mut self) -> Self {
+        self.owns_data = false;
+        self
+    }
 }
 
 impl Drop for Buffer {
